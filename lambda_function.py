@@ -2,8 +2,12 @@ import os
 from datetime import datetime, timedelta, time
 import zoneinfo
 import json
+import logging
 import requests
 import boto3
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # Load environment variables (from Lambda configuration)
 OCTOPUS_ENERGY_ACCOUNT_NUMBER = os.getenv('OCTOPUS_ENERGY_ACCOUNT_NUMBER')
@@ -60,15 +64,12 @@ SOLAR_GENERATION_EXPORT_PEAK_KW = GIVENERGY_INVERTER_MAX_KW - GIVENERGY_DISCHARG
 SOLAR_GENERATION_PEAK_FORECAST_KW = GIVENERGY_INVERTER_MAX_KW * (1 - (PEAK_GENERATION_FORECAST_VARIANCE_PERCENT / 100))
 SOLAR_FORECAST_FILE = 'solar_forecast.json'
 SOLAR_LATEST_PEAK_HOUR = 13 # Solar is highly likely to be past its peak at 1pm (13:00)
-SOLAR_FORECAST_MINS_BETWEEN_UPDATES = 50 # Only refresh the solar forecast every 50 mins (and only in peak time before SOLAR_LATEST_PEAK_HOUR), because we can only request 9 the forecast times per day in the free tier
+SOLAR_FORECAST_MINS_BETWEEN_UPDATES = 50 # Only refresh the solar forecast every 50 mins (and only in peak time before SOLAR_LATEST_PEAK_HOUR), because we can only request 9 the forecast times per day in the free tier
 
-s3_client = boto3.client('s3') # Initialize Boto3 S3 client
-
-def log(message):
-    print(message)
+s3_client = boto3.client('s3')
 
 def send_notification_to_user(notification_text):
-    log(f'Sending notification to user: {notification_text}')
+    logger.info(f'Sending notification to user: {notification_text}')
     requests.post(url=GIVENERGY_NOTIFICATION_URL, headers=GIVENERGY_HEADERS, json={
         'platforms': ['push'],
         'title': 'Battery export',
@@ -85,7 +86,7 @@ def get_time_in_server_timezone(time_in_other_timezone):
     return server_time
 
 def get_ev_charging_api_authorisation():
-    log('Getting Octopus Energy API authorisation token')
+    logger.info('Getting Octopus Energy API authorisation token')
     query = """
         mutation krakenTokenAuthentication($api: String!) {
             obtainKrakenToken(input: {APIKey: $api}) {
@@ -101,15 +102,15 @@ def get_ev_charging_api_authorisation():
         'variables': variables
     })
     if response.status_code == 200:
-        log('Successfully retrieved Octopus Energy API authorisation token')
+        logger.info('Successfully retrieved Octopus Energy API authorisation token')
         api_token = response.json()['data']['obtainKrakenToken']['token']
     else:
-        log(f'Warning: Failed to retrieve Octopus Energy API authorisation token: {response.text}')
+        logger.warning(f'Failed to retrieve Octopus Energy API authorisation token: {response.text}')
         api_token = None
     return api_token
 
 def get_ev_charging_schedule(script_start_time):
-    log('Checking EV charging schedule')
+    logger.info('Checking EV charging schedule')
     api_token = get_ev_charging_api_authorisation()
     if api_token is None:
         return None
@@ -134,17 +135,17 @@ def get_ev_charging_schedule(script_start_time):
     }, headers=headers)
     if response.status_code == 200:
         plannedDispatches = response.json()['data']['plannedDispatches']
-        log(f'Successfully retrieved Octopus Energy EV charging schedule: {plannedDispatches}')
+        logger.info(f'Successfully retrieved Octopus Energy EV charging schedule: {plannedDispatches}')
     else:
-        log(f'Warning: Failed to retrieve Octopus Energy EV charging schedule: {response.text}')
+        logger.warning(f'Failed to retrieve Octopus Energy EV charging schedule: {response.text}')
         plannedDispatches = None
     return plannedDispatches
 
 def ev_is_plugged_in(script_start_time, ev_schedule):
     if ev_schedule: # Assume EV is plugged in if a charging schedule exists
-        log('EV is plugged in')
+        logger.info('EV is plugged in')
         return True
-    log('EV is not plugged in')
+    logger.info('EV is not plugged in')
     return False
 
 def get_current_ev_charging_slot(script_start_time, ev_schedule):
@@ -153,7 +154,7 @@ def get_current_ev_charging_slot(script_start_time, ev_schedule):
         start_time = get_start_time_for_ev_charging_slot(charging_slot)
         end_time = get_end_time_for_ev_charging_slot(charging_slot)
         if start_time <= script_start_time <= end_time:
-            log(f'Current EV charging slot started at {start_time:%H:%M} and ends at {end_time:%H:%M}')
+            logger.info(f'Current EV charging slot started at {start_time:%H:%M} and ends at {end_time:%H:%M}')
             current_charging_slot = charging_slot
     return current_charging_slot
 
@@ -164,7 +165,7 @@ def get_next_ev_charging_slot(script_start_time, ev_schedule):
         start_time = get_start_time_for_ev_charging_slot(charging_slot)
         end_time = get_end_time_for_ev_charging_slot(charging_slot)
         if end_time > script_start_time and (earliest_end_time is None or end_time < earliest_end_time):
-            log(f'Next EV charging slot starts at {start_time:%H:%M} and ends at {end_time:%H:%M}')
+            logger.info(f'Next EV charging slot starts at {start_time:%H:%M} and ends at {end_time:%H:%M}')
             next_charging_slot = charging_slot
             earliest_end_time = end_time
     return next_charging_slot
@@ -172,9 +173,9 @@ def get_next_ev_charging_slot(script_start_time, ev_schedule):
 def ev_is_charging(script_start_time, ev_schedule):
     current_charging_slot = get_current_ev_charging_slot(script_start_time, ev_schedule)
     if current_charging_slot:
-        log('EV is charging right now')
+        logger.info('EV is charging right now')
         return True
-    log('EV is not currently charging')
+    logger.info('EV is not currently charging')
     return False
 
 def get_end_time_for_ev_charging_slot(charging_slot):
@@ -201,14 +202,14 @@ def handle_ev_charging(script_start_time, ev_schedule):
     stop_discharging_battery()
 
 def get_remaining_solar_generation_for_today(script_start_time, solar_forecast, forecast_optimism=SOLCAST_OPTIMISM_NORMAL):
-    log(f'Getting remaining solar generation for today using {forecast_optimism}')
+    logger.info(f'Getting remaining solar generation for today using {forecast_optimism}')
     total_generation = 0
     for next_forecast in solar_forecast:
         forecast_time = datetime.fromisoformat(next_forecast['period_end']).astimezone(UK_TIMEZONE)
         if forecast_time > script_start_time and forecast_time.date() == script_start_time.date():
             total_generation += next_forecast[forecast_optimism]
     total_generation_as_battery_percentage = (total_generation / GIVENERGY_USABLE_BATTERY_SIZE_KWH) * 100
-    log(f'{total_generation:.3f} kWh more to be generated today ({total_generation_as_battery_percentage:.0f}% of total battery capacity) using {forecast_optimism}')
+    logger.info(f'{total_generation:.3f} kWh more to be generated today ({total_generation_as_battery_percentage:.0f}% of total battery capacity) using {forecast_optimism}')
     return total_generation
 
 def get_solar_generation_kw_time(script_start_time, solar_forecast, generation_kw, want_generation_end_time, want_peak_generation=False, forecast_optimism=SOLCAST_OPTIMISM_NORMAL):
@@ -244,18 +245,18 @@ def get_solar_generation_kw_time(script_start_time, solar_forecast, generation_k
     else:
         requested_generation_time = earliest_requested_generation_time
     if earliest_any_generation_time is not None and earliest_any_generation_time == requested_generation_time:
-        log(f'We are already generating {earliest_any_generation_kw:.3f} kW using {forecast_optimism} (at {earliest_any_generation_time:%H:%M})')
+        logger.info(f'We are already generating {earliest_any_generation_kw:.3f} kW using {forecast_optimism} (at {earliest_any_generation_time:%H:%M})')
         requested_generation_time = None
     elif requested_generation_time is None:
-        log(f'Generation will not reach {generation_kw:.3f} kW for the rest of today using {forecast_optimism} (earliest generation is {earliest_any_generation_kw:.3f} kW, max generation is {max_generation_today_kw:.3f} kW)')
-        latest_peak_solar = create_time_from_hour_minute(SOLAR_LATEST_PEAK_HOUR, 0, date=script_start_time.date()) # Make sure we don't detect peak solar generation late in the day
+        logger.info(f'Generation will not reach {generation_kw:.3f} kW for the rest of today using {forecast_optimism} (earliest generation is {earliest_any_generation_kw:.3f} kW, max generation is {max_generation_today_kw:.3f} kW)')
+        latest_peak_solar = create_time_from_hour_minute(SOLAR_LATEST_PEAK_HOUR, 0, date=script_start_time.date()) # Make sure we don't detect peak solar generation late in the day
         if want_peak_generation and max_generation_today_time is not None and max_generation_today_time > script_start_time and script_start_time < latest_peak_solar:
             requested_generation_time = max_generation_today_time
-            log(f'Peak generation today is {max_generation_today_kw:.3f} kW at {requested_generation_time:%H:%M}')
+            logger.info(f'Peak generation today is {max_generation_today_kw:.3f} kW at {requested_generation_time:%H:%M}')
     elif want_generation_end_time:
-        log(f'Generation should drop below {generation_kw:.3f} kW at {requested_generation_time:%H:%M} using {forecast_optimism} (earliest generation is {earliest_any_generation_kw:.3f} kW at {earliest_any_generation_time:%H:%M}, max generation is {max_generation_today_kw:.3f} kW at {max_generation_today_time:%H:%M})')
+        logger.info(f'Generation should drop below {generation_kw:.3f} kW at {requested_generation_time:%H:%M} using {forecast_optimism} (earliest generation is {earliest_any_generation_kw:.3f} kW at {earliest_any_generation_time:%H:%M}, max generation is {max_generation_today_kw:.3f} kW at {max_generation_today_time:%H:%M})')
     else:
-        log(f'Generation should get to {generation_kw:.3f} kW at {requested_generation_time:%H:%M} using {forecast_optimism} (earliest generation is {earliest_any_generation_kw:.3f} kW at {earliest_any_generation_time:%H:%M}, max generation is {max_generation_today_kw:.3f} kW at {max_generation_today_time:%H:%M})')
+        logger.info(f'Generation should get to {generation_kw:.3f} kW at {requested_generation_time:%H:%M} using {forecast_optimism} (earliest generation is {earliest_any_generation_kw:.3f} kW at {earliest_any_generation_time:%H:%M}, max generation is {max_generation_today_kw:.3f} kW at {max_generation_today_time:%H:%M})')
     return requested_generation_time
 
 def get_solar_generation_peak_start(script_start_time, solar_forecast):
@@ -268,9 +269,9 @@ def is_in_off_peak(script_start_time):
     tariff_off_peak_start = get_off_peak_start(script_start_time)
     tariff_peak_start = create_time_from_hour_minute(TARIFF_PEAK_START_HOUR, TARIFF_PEAK_START_MINUTE, date=script_start_time.date())
     if script_start_time >= tariff_off_peak_start or script_start_time < tariff_peak_start:
-        log(f'In off peak hours')
+        logger.info(f'In off peak hours')
         return True
-    log(f'In peak hours')
+    logger.info(f'In peak hours')
     return False
 
 def is_in_peak(script_start_time):
@@ -279,11 +280,11 @@ def is_in_peak(script_start_time):
 def get_solar_forecast_from_file(script_start_time):
     forecasts = None
     try:
-        log('Loading most recent solar forecast from file')
+        logger.info('Loading most recent solar forecast from file')
         response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=SOLAR_FORECAST_FILE)
         forecasts = json.loads(response['Body'].read().decode('utf-8'))
     except Exception as s3_e:
-        log(f'Failed to load forecast from S3: {s3_e}. No forecast data available.')
+        logger.warning(f'Failed to load forecast from S3: {s3_e}. No forecast data available.')
         forecasts = []
     return forecasts
 
@@ -297,41 +298,41 @@ def should_update_solar_forecast(script_start_time):
                 last_modified = response['LastModified'].astimezone(UK_TIMEZONE)
                 time_difference = script_start_time - last_modified
                 if time_difference > timedelta(minutes=SOLAR_FORECAST_MINS_BETWEEN_UPDATES):
-                    log(f'Solar forecast updated over {SOLAR_FORECAST_MINS_BETWEEN_UPDATES} mins ago (last updated: {last_modified:%H:%M})')
+                    logger.info(f'Solar forecast updated over {SOLAR_FORECAST_MINS_BETWEEN_UPDATES} mins ago (last updated: {last_modified:%H:%M})')
                     update = True
             except Exception as e:
-                log(f'Could not check solar forecast file age: {e}. Will fetch a fresh forecast.')
+                logger.warning(f'Could not check solar forecast file age: {e}. Will fetch a fresh forecast.')
                 update = True
     return update
 
 def get_solar_forecast(script_start_time):
-    log('Getting solar forecast')
+    logger.info('Getting solar forecast')
     if should_update_solar_forecast(script_start_time):
         response = requests.get(url=SOLCAST_URL)
         if response.status_code == 200:
             forecasts = response.json()['forecasts']
-            log(f'Successfully retrieved solar forecast')
+            logger.info(f'Successfully retrieved solar forecast')
             s3_client.put_object(
                 Bucket=S3_BUCKET_NAME,
                 Key=SOLAR_FORECAST_FILE,
                 Body=json.dumps(forecasts, indent=2)
             )
-            log(f'Successfully saved solar forecast to: {SOLAR_FORECAST_FILE}')
+            logger.info(f'Successfully saved solar forecast to: {SOLAR_FORECAST_FILE}')
         else:
-            log(f'Failed to get solar forecast: {response} - {response.text}')
+            logger.warning(f'Failed to get solar forecast: {response} - {response.text}')
             forecasts = get_solar_forecast_from_file(script_start_time)
     else:
-        log(f'Getting solar forecast from file to minimise Solcast API calls')
+        logger.info(f'Getting solar forecast from file to minimise Solcast API calls')
         forecasts = get_solar_forecast_from_file(script_start_time)
     return forecasts
 
 def get_battery_settings(): # Only used for debugging
-    log('Getting a list of all battery presets')
+    logger.info('Getting a list of all battery presets')
     response = requests.get(url=GIVENERGY_SETTINGS_PRESETS_URL, headers=GIVENERGY_HEADERS)
     if response.status_code == 200:
         response_data = response.json()
         settings = response_data['data']
-        log(f'Current battery presets: {settings}')
+        logger.info(f'Current battery presets: {settings}')
         return settings
     else:
         raise RuntimeError(f'Failed to get current battery presets: {response.text}')
@@ -340,7 +341,7 @@ def get_battery_soc():
     response = requests.get(url=GIVENERGY_STATUS_URL, headers=GIVENERGY_HEADERS)
     if response.status_code == 200:
         battery_soc = response.json()['data']['battery']['percent']
-        log(f'Battery percentage is {battery_soc}%')
+        logger.info(f'Battery percentage is {battery_soc}%')
         return battery_soc
     else:
         raise RuntimeError(f'Failed to get battery status: {response.text}')
@@ -354,7 +355,7 @@ def get_recent_consumption(start_time):
     latest_date = start_time - timedelta(days=1)
     formatted_earliest_date = earliest_date.strftime('%Y-%m-%d')
     formatted_latest_date = latest_date.strftime('%Y-%m-%d')
-    log(f'Getting consumption data from {formatted_earliest_date} to {formatted_latest_date}')
+    logger.info(f'Getting consumption data from {formatted_earliest_date} to {formatted_latest_date}')
     url = GIVENERGY_DATA_POINTS_URL + formatted_latest_date
     params = {
         'page': 1,
@@ -363,9 +364,9 @@ def get_recent_consumption(start_time):
     response = requests.get(url=url, headers=GIVENERGY_HEADERS, params=params)
     if response.status_code == 200:
         consumption = response.json()['data']
-        log('Successfully retrieved recent consumption data')
+        logger.info('Successfully retrieved recent consumption data')
     else:
-        log(f'Warning: Failed to get recent consumption data: {response.text}')
+        logger.warning(f'Failed to get recent consumption data: {response.text}')
         consumption = []
     return consumption
 
@@ -384,10 +385,10 @@ def predict_consumption(start_time, end_time):
             daily_totals.append(day_total)
     if daily_totals:
         average_consumption = sum(daily_totals) / len(daily_totals)
-        log(f'Average consumption between {start_time:%H:%M} and {end_time:%H:%M} over {len(daily_totals)} days: {average_consumption:.3f} kWh')
+        logger.info(f'Average consumption between {start_time:%H:%M} and {end_time:%H:%M} over {len(daily_totals)} days: {average_consumption:.3f} kWh')
     else:
         average_consumption = 0
-        log(f'No consumption data found for the last {CONSUMPTION_AVERAGE_DAYS} days')
+        logger.info(f'No consumption data found for the last {CONSUMPTION_AVERAGE_DAYS} days')
     return average_consumption
 
 def get_minutes_left_to_export_battery(start_time, end_time):
@@ -396,20 +397,20 @@ def get_minutes_left_to_export_battery(start_time, end_time):
     total_minutes_left_to_export = seconds_left_to_export // 60
     hours_left_to_export = round(seconds_left_to_export // 3600)
     remainder_minutes_left_to_export = round((seconds_left_to_export % 3600) // 60)
-    log(f'There are {hours_left_to_export} hours and {remainder_minutes_left_to_export} minutes left to export')
+    logger.info(f'There are {hours_left_to_export} hours and {remainder_minutes_left_to_export} minutes left to export')
     return total_minutes_left_to_export
 
 def get_minutes_needed_to_export_battery_at_full_power(amount_to_export):
     total_minutes_to_export = amount_to_export * GIVENERGY_BATTERY_DISCHARGE_MINUTES_PER_PERCENT
     hours_to_export = round(total_minutes_to_export // 60)
     remainder_minutes_to_export = round(total_minutes_to_export % 60)
-    log(f'Need {hours_to_export} hours and {remainder_minutes_to_export} minutes to export {amount_to_export:.0f}% at full power')
+    logger.info(f'Need {hours_to_export} hours and {remainder_minutes_to_export} minutes to export {amount_to_export:.0f}% at full power')
     return total_minutes_to_export
 
 def get_minutes_needed_to_export_battery(script_start_time, amount_to_export, export_end_time=None, solar_forecast=None):
     minimum_minutes_to_export = get_minutes_needed_to_export_battery_at_full_power(amount_to_export)
     if export_end_time is not None and solar_forecast is not None:
-        log(f'Calculating how long it will take to export {amount_to_export:.0f}% by {export_end_time:%H:%M} considering generation slows export')
+        logger.info(f'Calculating how long it will take to export {amount_to_export:.0f}% by {export_end_time:%H:%M} considering generation slows export')
         # Filter solar forecasts to only include relevant future periods
         relevant_forecasts = [
             f for f in solar_forecast
@@ -439,14 +440,14 @@ def get_minutes_needed_to_export_battery(script_start_time, amount_to_export, ex
                     total_minutes_to_export += needed_real_minutes
                 else:
                     total_minutes_to_export += SOLCAST_FORECAST_PERIOD_MINUTES
-        total_minutes_to_export += MINS_TO_ALLOW_FOR_SOLAR_EXPORT_CHANGES # Add time to allow for solar forecast changes
-        log(f'Can export the equivalent of {minutes_exported:.0f} mins over {total_minutes_to_export:.0f} mins due to solar generation. We need {minimum_minutes_to_export:.0f} mins.')
+        total_minutes_to_export += MINS_TO_ALLOW_FOR_SOLAR_EXPORT_CHANGES # Add time to allow for solar forecast changes
+        logger.info(f'Can export the equivalent of {minutes_exported:.0f} mins over {total_minutes_to_export:.0f} mins due to solar generation. We need {minimum_minutes_to_export:.0f} mins.')
         total_minutes_to_export = max(total_minutes_to_export, minimum_minutes_to_export)
     else:
         total_minutes_to_export = minimum_minutes_to_export
     hours_to_export = round(total_minutes_to_export // 60)
     remainder_minutes_to_export = round(total_minutes_to_export % 60)
-    log(f'Need {hours_to_export} hours and {remainder_minutes_to_export} minutes to export {amount_to_export:.0f}%')
+    logger.info(f'Need {hours_to_export} hours and {remainder_minutes_to_export} minutes to export {amount_to_export:.0f}%')
     return total_minutes_to_export
 
 def get_battery_percent_needed_for_consumption(script_start_time, solar_forecast, end_time):
@@ -455,16 +456,16 @@ def get_battery_percent_needed_for_consumption(script_start_time, solar_forecast
     total_consumption *= (1 + (CONSUMPTION_PREDICTION_VARIANCE_PERCENT / 100))
     battery_kwh_needed = max(total_consumption - total_generation, 0)
     battery_percent_needed = get_battery_percentage_for_consumption(battery_kwh_needed)
-    log(f'Need {battery_percent_needed:.0f}% battery ({battery_kwh_needed:.1f} kWh) for forecast {total_consumption:.3f} kWh consumption and {total_generation:.3f} kWh generation')
+    logger.info(f'Need {battery_percent_needed:.0f}% battery ({battery_kwh_needed:.1f} kWh) for forecast {total_consumption:.3f} kWh consumption and {total_generation:.3f} kWh generation')
     return battery_percent_needed
 
 def get_battery_export_settings():
-    log('Checking current battery export settings')
+    logger.info('Checking current battery export settings')
     response = requests.get(url=GIVENERGY_EXPORT_URL, headers=GIVENERGY_HEADERS)
     if response.status_code == 200:
         response_data = response.json()
         settings = response_data['data']
-        log(f'Current battery export settings: {settings}')
+        logger.info(f'Current battery export settings: {settings}')
         return settings
     else:
         raise RuntimeError(f'Failed to get current battery export settings: {response.text}')
@@ -480,7 +481,7 @@ def export_settings_need_updating(desired_end_time):
 def start_battery_export(script_start_time, desired_end_time):
     need_to_start_export = export_settings_need_updating(desired_end_time)
     if need_to_start_export:
-        log('Current export settings do not match desired settings')
+        logger.info('Current export settings do not match desired settings')
         desired_export_start = script_start_time.strftime('%H:%M')
         desired_export_end = desired_end_time.strftime('%H:%M')
         response = requests.post(url=GIVENERGY_EXPORT_URL, headers=GIVENERGY_HEADERS, json={
@@ -491,49 +492,53 @@ def start_battery_export(script_start_time, desired_end_time):
             }]
         })
         if response.status_code == 201:
-            log(f'Starting battery export to discharge by {desired_export_end}')
+            logger.info(f'Starting battery export to discharge by {desired_export_end}')
         else:
+            logger.error(f'Failed to set battery export timing: {response.text}')
             raise RuntimeError(f'Failed to set battery export timing: {response.text}')
     else:
-        log('Current export settings match desired ones, so doing nothing')
+        logger.info('Current export settings match desired ones, so doing nothing')
 
 def disable_battery_export():
     current_export_status = get_battery_export_settings()['enabled']
     if current_export_status:
-        log('Export is turned on, so need to disable it')
+        logger.info('Export is turned on, so need to disable it')
         response = requests.post(url=GIVENERGY_EXPORT_URL, headers=GIVENERGY_HEADERS, json={
             'enabled': False,
         })
         if response.status_code == 201:
-            log('Export successfully disabled')
+            logger.info('Export successfully disabled')
         else:
+            logger.error(f'Failed to turn off battery export: {response.text}')
             raise RuntimeError(f'Failed to turn off battery export: {response.text}')
     else:
-        log('Export is already turned off')
+        logger.info('Export is already turned off')
 
 def change_battery_eco_mode(enabled):
     if enabled:
-        log('Trying to turn on Eco mode')
+        logger.info('Trying to turn on Eco mode')
     else:
-        log('Trying to turn off Eco mode')
+        logger.info('Trying to turn off Eco mode')
     response = requests.get(url=GIVENERGY_ECO_URL, headers=GIVENERGY_HEADERS)
     if response.status_code == 200:
         current_eco_mode = response.json()['data']['enabled']
         if current_eco_mode != enabled:
-            log(f'Eco mode is {current_eco_mode}, so will change it')
+            logger.info(f'Eco mode is {current_eco_mode}, so will change it')
             response = requests.post(url=GIVENERGY_ECO_URL, headers=GIVENERGY_HEADERS, json={
                 'enabled': enabled
             })
             if response.status_code == 201:
                 if enabled:
-                    log(f'Successfully turned on Eco mode')
+                    logger.info(f'Successfully turned on Eco mode')
                 else:
-                    log(f'Successfully turned off Eco mode')
+                    logger.info(f'Successfully turned off Eco mode')
             else:
+                logger.error(f'Failed to change Eco mode: {response.text}')
                 raise RuntimeError(f'Failed to change Eco mode: {response.text}')
         else:
-            log(f'Eco mode is already {enabled}, so doing nothing')
+            logger.info(f'Eco mode is already {enabled}, so doing nothing')
     else:
+        logger.error(f'Failed to get Eco mode: {response.text}')
         raise RuntimeError(f'Failed to get Eco mode: {response.text}')
 
 def turn_on_battery_eco_mode():
@@ -547,66 +552,66 @@ def stop_charging_battery(script_start_time, desired_end_time):
     change_battery_eco_mode(False)
 
 def handle_battery_export(script_start_time, export_end_time, battery_reserve=0, export_now=False, solar_forecast=None):
-    log(f'Aiming to end export by {export_end_time:%H:%M} (leaving {battery_reserve:.0f}% usable battery for consumption)')
+    logger.info(f'Aiming to end export by {export_end_time:%H:%M} (leaving {battery_reserve:.0f}% usable battery for consumption)')
     if script_start_time < export_end_time:
         amount_to_export = max(get_battery_soc() - GIVENERGY_MIN_BATTERY_PERCENT, 0)
         amount_to_export = max(amount_to_export - battery_reserve, 0)
-        log(f'We want to export {amount_to_export:.0f}% (leaving {battery_reserve:.0f}% usable battery for consumption)')
+        logger.info(f'We want to export {amount_to_export:.0f}% (leaving {battery_reserve:.0f}% usable battery for consumption)')
         if amount_to_export > 0:
             minutes_needed_to_export = get_minutes_needed_to_export_battery(script_start_time, amount_to_export, export_end_time=export_end_time, solar_forecast=solar_forecast)
             minutes_until_export_end = get_minutes_left_to_export_battery(script_start_time, export_end_time)
             if export_now or minutes_needed_to_export >= minutes_until_export_end:
-                log(f'We need to start exporting now to export {amount_to_export:.0f}% by {export_end_time:%H:%M}')
+                logger.info(f'We need to start exporting now to export {amount_to_export:.0f}% by {export_end_time:%H:%M}')
                 start_battery_export(script_start_time, export_end_time)
             else:
-                log('There is too much time left to start exporting now')
+                logger.info('There is too much time left to start exporting now')
                 turn_on_battery_eco_mode()
         else:
-            log('Battery is too low to export')
+            logger.info('Battery is too low to export')
             if export_now:
                 stop_charging_battery(script_start_time, export_end_time)
             else:
                 turn_on_battery_eco_mode()
     else:
-        log('It is too late to export')
+        logger.info('It is too late to export')
         turn_on_battery_eco_mode()
 
 def run_action_for_ev_plugged_in(script_start_time, ev_schedule):
     if ev_is_charging(script_start_time, ev_schedule):
-        log('EV is plugged in and charging (stop discharging battery because it will just charge the car)')
+        logger.info('EV is plugged in and charging (stop discharging battery because it will just charge the car)')
         handle_ev_charging(script_start_time, ev_schedule)
     else:
-        log('EV is plugged in and not charging (no battery export because it will just charge the car)')
+        logger.info('EV is plugged in and not charging (no battery export because it will just charge the car)')
         turn_on_battery_eco_mode()
         next_run_time = get_next_ev_charging_slot_start_time(script_start_time, ev_schedule)
         if next_run_time is None:
-            log('EV charging has finished')
+            logger.info('EV charging has finished')
 
 def run_action_based_on_current_time(script_start_time):
     tariff_off_peak_start = get_off_peak_start(script_start_time)
     in_off_peak = is_in_off_peak(script_start_time)
     if in_off_peak:
-        log('In tariff off-peak period')
+        logger.info('In tariff off-peak period')
         turn_on_battery_eco_mode()
     else:
-        log('In tariff peak period')
+        logger.info('In tariff peak period')
         ev_schedule = get_ev_charging_schedule(script_start_time)
         solar_forecast = get_solar_forecast(script_start_time)
         solar_generation_peak_start = get_solar_generation_peak_start(script_start_time, solar_forecast)
         if ev_is_plugged_in(script_start_time, ev_schedule):
             run_action_for_ev_plugged_in(script_start_time, ev_schedule)
         elif solar_generation_peak_start is not None and script_start_time < solar_generation_peak_start:
-            log('In tariff peak period, before solar generation is at its peak')
+            logger.info('In tariff peak period, before solar generation is at its peak')
             battery_needed = get_battery_percent_needed_for_consumption(script_start_time, solar_forecast, tariff_off_peak_start)
             handle_battery_export(script_start_time, export_end_time=solar_generation_peak_start, solar_forecast=solar_forecast, battery_reserve=battery_needed)
         else:
-            log('In tariff peak period, after solar generation peak')
+            logger.info('In tariff peak period, after solar generation peak')
             handle_battery_export(script_start_time, export_end_time=tariff_off_peak_start)
 
 def lambda_handler(event, context):
     try:
         script_start_time = datetime.now(UK_TIMEZONE)
-        log(f'Starting script at {script_start_time:%H:%M} (server time: {get_time_in_server_timezone(script_start_time):%H:%M})')
+        logger.info(f'Starting script at {script_start_time:%H:%M} (server time: {get_time_in_server_timezone(script_start_time):%H:%M})')
         run_action_based_on_current_time(script_start_time)
         return {'statusCode': 200, 'body': json.dumps('Script executed successfully!')}
     except Exception as exception:
