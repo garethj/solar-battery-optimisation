@@ -201,6 +201,7 @@ def get_start_time_for_ev_charging_slot(charging_slot):
     return datetime.fromisoformat(charging_slot['start']).astimezone(UK_TIMEZONE)
 
 def get_current_ev_charging_slot_end_time(script_start_time, ev_schedule):
+    time = None
     charging_slot = get_current_ev_charging_slot(script_start_time, ev_schedule)
     if charging_slot:
         time = get_end_time_for_ev_charging_slot(charging_slot)
@@ -347,18 +348,18 @@ def get_battery_settings(): # Only used for debugging
         response_data = response.json()
         settings = response_data['data']
         log(f'Current battery presets: {settings}')
+        return settings
     else:
-        send_notification_to_user(f'Failed to get current battery presets: {response.text}')
-    return settings
+        raise RuntimeError(f'Failed to get current battery presets: {response.text}')
 
 def get_battery_soc():
     response = requests.get(url=GIVENERGY_STATUS_URL, headers=GIVENERGY_HEADERS)
     if response.status_code == 200:
         battery_soc = response.json()['data']['battery']['percent']
         log(f'Battery percentage is {battery_soc}%')
+        return battery_soc
     else:
-        send_notification_to_user(f'Failed to get battery status: {response.text}')
-    return battery_soc
+        raise RuntimeError(f'Failed to get battery status: {response.text}')
 
 def get_battery_percentage_for_consumption(kWh):
     battery_percent = (kWh / GIVENERGY_USABLE_BATTERY_SIZE_KWH) * 100
@@ -480,9 +481,9 @@ def get_battery_export_settings():
         response_data = response.json()
         settings = response_data['data']
         log(f'Current battery export settings: {settings}')
+        return settings
     else:
-        send_notification_to_user(f'Failed to get current battery export settings: {response.text}')
-    return settings
+        raise RuntimeError(f'Failed to get current battery export settings: {response.text}')
 
 def battery_export_is_already_set_correctly(desired_end_time):
     settings = get_battery_export_settings()

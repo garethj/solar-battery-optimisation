@@ -1,7 +1,8 @@
 from datetime import datetime, date
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 import zoneinfo
 
+import pytest
 import lambda_function as lf
 
 UK = zoneinfo.ZoneInfo('Europe/London')
@@ -122,3 +123,72 @@ def test_consumption_variance_applies_10_percent():
     expected_kwh = 1.0 * 1.1  # 10% variance
     expected_percent = (expected_kwh / lf.GIVENERGY_USABLE_BATTERY_SIZE_KWH) * 100
     assert abs(result - expected_percent) < 0.01
+
+
+# --- get_battery_soc (unbound variable fix) ---
+
+def _mock_response(status_code, json_data=None, text='error'):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.text = text
+    if json_data is not None:
+        resp.json.return_value = json_data
+    return resp
+
+
+def test_get_battery_soc_success():
+    resp = _mock_response(200, {'data': {'battery': {'percent': 75}}})
+    with patch.object(lf.requests, 'get', return_value=resp):
+        assert lf.get_battery_soc() == 75
+
+
+def test_get_battery_soc_failure_raises():
+    resp = _mock_response(500)
+    with patch.object(lf.requests, 'get', return_value=resp):
+        with pytest.raises(RuntimeError, match='Failed to get battery status'):
+            lf.get_battery_soc()
+
+
+# --- get_battery_settings (unbound variable fix) ---
+
+def test_get_battery_settings_success():
+    resp = _mock_response(200, {'data': {'some': 'settings'}})
+    with patch.object(lf.requests, 'get', return_value=resp):
+        assert lf.get_battery_settings() == {'some': 'settings'}
+
+
+def test_get_battery_settings_failure_raises():
+    resp = _mock_response(500)
+    with patch.object(lf.requests, 'get', return_value=resp):
+        with pytest.raises(RuntimeError, match='Failed to get current battery presets'):
+            lf.get_battery_settings()
+
+
+# --- get_battery_export_settings (unbound variable fix) ---
+
+def test_get_battery_export_settings_success():
+    resp = _mock_response(200, {'data': {'enabled': True, 'slots': []}})
+    with patch.object(lf.requests, 'get', return_value=resp):
+        assert lf.get_battery_export_settings() == {'enabled': True, 'slots': []}
+
+
+def test_get_battery_export_settings_failure_raises():
+    resp = _mock_response(500)
+    with patch.object(lf.requests, 'get', return_value=resp):
+        with pytest.raises(RuntimeError, match='Failed to get current battery export settings'):
+            lf.get_battery_export_settings()
+
+
+# --- get_current_ev_charging_slot_end_time (unbound variable fix) ---
+
+def test_get_current_ev_charging_slot_end_time_no_current_slot():
+    t = datetime(2025, 6, 15, 12, 0, tzinfo=UK)
+    schedule = [{'start': '2025-06-15T23:30:00+01:00', 'end': '2025-06-16T05:30:00+01:00'}]
+    assert lf.get_current_ev_charging_slot_end_time(t, schedule) is None
+
+
+def test_get_current_ev_charging_slot_end_time_in_slot():
+    t = datetime(2025, 6, 16, 1, 0, tzinfo=UK)
+    schedule = [{'start': '2025-06-15T23:30:00+01:00', 'end': '2025-06-16T05:30:00+01:00'}]
+    result = lf.get_current_ev_charging_slot_end_time(t, schedule)
+    assert result == datetime(2025, 6, 16, 5, 30, tzinfo=UK)
