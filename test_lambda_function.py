@@ -1,4 +1,4 @@
-from datetime import datetime, date
+from datetime import datetime, date, timedelta, timezone
 from unittest.mock import patch, MagicMock
 import zoneinfo
 
@@ -215,3 +215,37 @@ def test_export_settings_no_update_needed():
     desired_end = datetime(2025, 6, 15, 23, 30, tzinfo=UK)
     with patch.object(lf, 'get_battery_export_settings', return_value=settings):
         assert lf.export_settings_need_updating(desired_end) is False
+
+
+# --- should_update_solar_forecast (S3 error handling) ---
+
+def test_should_update_solar_forecast_s3_error_returns_true():
+    """If the S3 file doesn't exist, should return True to trigger a fresh fetch."""
+    t = datetime(2025, 6, 15, 10, 0, tzinfo=UK)  # peak, before 13:00
+    lf.s3_client.head_object.side_effect = Exception('NoSuchKey')
+    assert lf.should_update_solar_forecast(t) is True
+    lf.s3_client.head_object.side_effect = None
+
+
+def test_should_update_solar_forecast_recent_file_returns_false():
+    """If the file was modified recently, no update needed."""
+    t = datetime(2025, 6, 15, 10, 0, tzinfo=UK)
+    lf.s3_client.head_object.return_value = {
+        'LastModified': (t - timedelta(minutes=10)).astimezone(timezone.utc)
+    }
+    assert lf.should_update_solar_forecast(t) is False
+
+
+def test_should_update_solar_forecast_old_file_returns_true():
+    """If the file was modified long ago, should update."""
+    t = datetime(2025, 6, 15, 10, 0, tzinfo=UK)
+    lf.s3_client.head_object.return_value = {
+        'LastModified': (t - timedelta(minutes=60)).astimezone(timezone.utc)
+    }
+    assert lf.should_update_solar_forecast(t) is True
+
+
+def test_should_update_solar_forecast_off_peak_returns_false():
+    """During off-peak, never update."""
+    t = datetime(2025, 6, 15, 3, 0, tzinfo=UK)
+    assert lf.should_update_solar_forecast(t) is False

@@ -312,11 +312,15 @@ def should_update_solar_forecast(script_start_time):
     if is_in_peak(script_start_time):
         latest_peak_solar = create_time_from_hour_minute(SOLAR_LATEST_PEAK_HOUR, 0, date=script_start_time.date())
         if script_start_time < latest_peak_solar:
-            response = s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=SOLAR_FORECAST_FILE)
-            last_modified = response['LastModified'].astimezone(UK_TIMEZONE)
-            time_difference = script_start_time - last_modified
-            if time_difference > timedelta(minutes=SOLAR_FORECAST_MINS_BETWEEN_UPDATES):
-                print(f'Solar forecast updated over {SOLAR_FORECAST_MINS_BETWEEN_UPDATES} mins ago (last updated: {last_modified:%H:%M})')
+            try:
+                response = s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=SOLAR_FORECAST_FILE)
+                last_modified = response['LastModified'].astimezone(UK_TIMEZONE)
+                time_difference = script_start_time - last_modified
+                if time_difference > timedelta(minutes=SOLAR_FORECAST_MINS_BETWEEN_UPDATES):
+                    log(f'Solar forecast updated over {SOLAR_FORECAST_MINS_BETWEEN_UPDATES} mins ago (last updated: {last_modified:%H:%M})')
+                    update = True
+            except Exception as e:
+                log(f'Could not check solar forecast file age: {e}. Will fetch a fresh forecast.')
                 update = True
     return update
 
