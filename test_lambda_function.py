@@ -1,4 +1,5 @@
 from datetime import datetime, date
+from unittest.mock import patch
 import zoneinfo
 
 import lambda_function as lf
@@ -104,3 +105,20 @@ def test_get_minutes_needed_to_export_full_battery():
 
 def test_get_minutes_needed_to_export_zero():
     assert lf.get_minutes_needed_to_export_battery_at_full_power(0) == 0
+
+
+# --- get_battery_percent_needed_for_consumption (variance fix) ---
+
+def test_consumption_variance_applies_10_percent():
+    """The variance should multiply consumption by 1.1x, not 2.0x."""
+    t = datetime(2025, 6, 15, 12, 0, tzinfo=UK)
+    off_peak = datetime(2025, 6, 15, 23, 30, tzinfo=UK)
+    solar_forecast = []  # no solar
+
+    with patch.object(lf, 'predict_consumption', return_value=1.0), \
+         patch.object(lf, 'get_remaining_solar_generation_for_today', return_value=0.0):
+        result = lf.get_battery_percent_needed_for_consumption(t, solar_forecast, off_peak)
+
+    expected_kwh = 1.0 * 1.1  # 10% variance
+    expected_percent = (expected_kwh / lf.GIVENERGY_USABLE_BATTERY_SIZE_KWH) * 100
+    assert abs(result - expected_percent) < 0.01

@@ -467,7 +467,7 @@ def get_minutes_needed_to_export_battery(script_start_time, amount_to_export, ex
 def get_battery_percent_needed_for_consumption(script_start_time, solar_forecast, end_time):
     total_generation = get_remaining_solar_generation_for_today(script_start_time, solar_forecast, SOLCAST_OPTIMISM_PESSIMISTIC)
     total_consumption = predict_consumption(script_start_time, end_time)
-    total_consumption *= (1 + (CONSUMPTION_PREDICTION_VARIANCE_PERCENT / 10))
+    total_consumption *= (1 + (CONSUMPTION_PREDICTION_VARIANCE_PERCENT / 100))
     battery_kwh_needed = max(total_consumption - total_generation, 0)
     battery_percent_needed = get_battery_percentage_for_consumption(battery_kwh_needed)
     log(f'Need {battery_percent_needed:.0f}% battery ({battery_kwh_needed:.1f} kWh) for forecast {total_consumption:.3f} kWh consumption and {total_generation:.3f} kWh generation')
