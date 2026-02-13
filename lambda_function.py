@@ -20,7 +20,7 @@ SOLCAST_API_KEY = os.getenv('SOLCAST_API_KEY')
 S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME')
 
 # PREFERENCES
-END_EVENING_EXPORT_HOUR = 23 # End export by 21:30 to avoid noisy iBoost+ near bedtime
+END_EVENING_EXPORT_HOUR = 23 # End export by 23:30 to avoid noisy iBoost+ near bedtime
 END_EVENING_EXPORT_MINUTE = 30
 CONSUMPTION_PREDICTION_VARIANCE_PERCENT = 10 # % to increase consumption prediction by, in case we use more today, to ensure we don't discharge too much
 CONSUMPTION_AVERAGE_DAYS = 7 # Number of days to average consumption over (weekday + weekend coverage)
@@ -63,7 +63,7 @@ SOLAR_GENERATION_EXPORT_PEAK_KW = GIVENERGY_INVERTER_MAX_KW - GIVENERGY_DISCHARG
 SOLAR_GENERATION_PEAK_FORECAST_KW = GIVENERGY_INVERTER_MAX_KW * (1 - (PEAK_GENERATION_FORECAST_VARIANCE_PERCENT / 100))
 SOLAR_FORECAST_FILE = 'solar_forecast.json'
 SOLAR_LATEST_PEAK_HOUR = 13 # Solar is highly likely to be past its peak at 1pm (13:00)
-SOLAR_FORECAST_MINS_BETWEEN_UPDATES = 50 # Only refresh the solar forecast every 30 mins (and only in peak time before SOLAR_LATEST_PEAK_HOUR), because we can only request 9 the forecast times per day in the free tier
+SOLAR_FORECAST_MINS_BETWEEN_UPDATES = 50 # Only refresh the solar forecast every 50 mins (and only in peak time before SOLAR_LATEST_PEAK_HOUR), because we can only request 9 the forecast times per day in the free tier
 
 s3_client = boto3.client('s3') # Initialize Boto3 S3 client
 
@@ -125,7 +125,7 @@ def get_ev_charging_api_authorisation():
 def get_ev_charging_schedule(script_start_time):
     log('Checking EV charging schedule')
     api_token = get_ev_charging_api_authorisation()
-    if api_token == None:
+    if api_token is None:
         return None
     query = """
         query getData($input: String!) {
@@ -156,7 +156,7 @@ def get_ev_charging_schedule(script_start_time):
 
 def ev_is_plugged_in(script_start_time, ev_schedule):
     plugged_in = False
-    if ev_schedule != None and len(ev_schedule) > 0: # Assume EV is plugged in if a charging schedule exists
+    if ev_schedule is not None and len(ev_schedule) > 0: # Assume EV is plugged in if a charging schedule exists
         plugged_in = True
         log('EV is plugged in')
     else:
@@ -179,7 +179,7 @@ def get_next_ev_charging_slot(script_start_time, ev_schedule):
     for charging_slot in ev_schedule:
         start_time = get_start_time_for_ev_charging_slot(charging_slot)
         end_time = get_end_time_for_ev_charging_slot(charging_slot)
-        if end_time > script_start_time and (earliest_end_time == None or end_time < earliest_end_time):
+        if end_time > script_start_time and (earliest_end_time is None or end_time < earliest_end_time):
             log(f'Next EV charging slot starts at {start_time:%H:%M} and ends at {end_time:%H:%M}')
             next_charging_slot = charging_slot
             earliest_end_time = end_time
@@ -250,25 +250,25 @@ def get_solar_generation_kw_time(script_start_time, solar_forecast, generation_k
                 max_generation_today_kw = forecast_generation
                 max_generation_today_time = forecast_time
             if forecast_time > script_start_time:
-                if forecast_generation > 0 and (earliest_any_generation_time == None or earliest_any_generation_time > forecast_time):
+                if forecast_generation > 0 and (earliest_any_generation_time is None or earliest_any_generation_time > forecast_time):
                     earliest_any_generation_time = forecast_time
                     earliest_any_generation_kw = forecast_generation
                 if forecast_generation >= generation_kw:
-                    if earliest_requested_generation_time == None or earliest_requested_generation_time > forecast_time:
+                    if earliest_requested_generation_time is None or earliest_requested_generation_time > forecast_time:
                         earliest_requested_generation_time = forecast_time
-                    if latest_requested_generation_time == None or latest_requested_generation_time < forecast_time:
+                    if latest_requested_generation_time is None or latest_requested_generation_time < forecast_time:
                         latest_requested_generation_time = forecast_time
     if want_generation_end_time:
         requested_generation_time = latest_requested_generation_time
     else:
         requested_generation_time = earliest_requested_generation_time
-    if earliest_any_generation_time != None and earliest_any_generation_time == requested_generation_time:
+    if earliest_any_generation_time is not None and earliest_any_generation_time == requested_generation_time:
         log(f'We are already generating {earliest_any_generation_kw:.3f} kW using {forecast_optimism} (at {earliest_any_generation_time:%H:%M})')
         requested_generation_time = None
-    elif requested_generation_time == None:
+    elif requested_generation_time is None:
         log(f'Generation will not reach {generation_kw:.3f} kW for the rest of today using {forecast_optimism} (earliest generation is {earliest_any_generation_kw:.3f} kW, max generation is {max_generation_today_kw:.3f} kW)')
         latest_peak_solar = create_time_from_hour_minute(SOLAR_LATEST_PEAK_HOUR, 0, date=script_start_time.date()) # Make sure we don't detect peak solar generation late in the day
-        if want_peak_generation and max_generation_today_time != None and max_generation_today_time > script_start_time and script_start_time < latest_peak_solar:
+        if want_peak_generation and max_generation_today_time is not None and max_generation_today_time > script_start_time and script_start_time < latest_peak_solar:
             requested_generation_time = max_generation_today_time
             log(f'Peak generation today is {max_generation_today_kw:.3f} kW at {requested_generation_time:%H:%M}')
     elif want_generation_end_time:
@@ -438,7 +438,7 @@ def get_minutes_needed_to_export_battery_at_full_power(amount_to_export):
 
 def get_minutes_needed_to_export_battery(script_start_time, amount_to_export, export_end_time=None, solar_forecast=None):
     minimum_minutes_to_export = get_minutes_needed_to_export_battery_at_full_power(amount_to_export)
-    if export_end_time != None and solar_forecast != None:
+    if export_end_time is not None and solar_forecast is not None:
         log(f'Calculating how long it will take to export {amount_to_export:.0f}% by {export_end_time:%H:%M} considering generation slows export')
         # Filter solar forecasts to only include relevant future periods
         relevant_forecasts = [
@@ -625,7 +625,7 @@ def run_action_for_ev_plugged_in(script_start_time, ev_schedule):
         log('EV is plugged in and not charging (no battery export because it will just charge the car)')
         turn_on_battery_eco_mode()
         next_run_time = get_next_ev_charging_slot_start_time(script_start_time, ev_schedule)
-        if next_run_time == None:
+        if next_run_time is None:
             log('EV charging has finished')
 
 def run_action_based_on_current_time(script_start_time):
@@ -641,7 +641,7 @@ def run_action_based_on_current_time(script_start_time):
         solar_generation_peak_start = get_solar_generation_peak_start(script_start_time, solar_forecast)
         if ev_is_plugged_in(script_start_time, ev_schedule):
             run_action_for_ev_plugged_in(script_start_time, ev_schedule)
-        elif solar_generation_peak_start != None and script_start_time < solar_generation_peak_start:
+        elif solar_generation_peak_start is not None and script_start_time < solar_generation_peak_start:
             log('In tariff peak period, before solar generation is at its peak')
             battery_needed = get_battery_percent_needed_for_consumption(script_start_time, solar_forecast, tariff_off_peak_start)
             handle_battery_export(script_start_time, export_end_time=solar_generation_peak_start, solar_forecast=solar_forecast, battery_reserve=battery_needed)
