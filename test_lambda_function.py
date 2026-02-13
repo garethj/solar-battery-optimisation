@@ -497,6 +497,16 @@ def test_start_battery_export_skips_when_already_correct():
     mock_post.assert_not_called()
 
 
+def test_start_battery_export_failure_raises():
+    t = datetime(2025, 6, 15, 10, 0, tzinfo=UK)
+    end = datetime(2025, 6, 15, 12, 0, tzinfo=UK)
+    post_resp = _mock_response(500)
+    with patch.object(lf, 'export_settings_need_updating', return_value=True), \
+         patch.object(lf.requests, 'post', return_value=post_resp):
+        with pytest.raises(RuntimeError, match='Failed to set battery export timing'):
+            lf.start_battery_export(t, end)
+
+
 # --- disable_battery_export ---
 
 def test_disable_battery_export_when_enabled():
@@ -513,6 +523,14 @@ def test_disable_battery_export_already_off():
          patch.object(lf.requests, 'post') as mock_post:
         lf.disable_battery_export()
     mock_post.assert_not_called()
+
+
+def test_disable_battery_export_failure_raises():
+    post_resp = _mock_response(500)
+    with patch.object(lf, 'get_battery_export_settings', return_value={'enabled': True}), \
+         patch.object(lf.requests, 'post', return_value=post_resp):
+        with pytest.raises(RuntimeError, match='Failed to turn off battery export'):
+            lf.disable_battery_export()
 
 
 # --- change_battery_eco_mode ---
@@ -533,6 +551,22 @@ def test_change_battery_eco_mode_already_correct():
          patch.object(lf.requests, 'post') as mock_post:
         lf.change_battery_eco_mode(True)
     mock_post.assert_not_called()
+
+
+def test_change_battery_eco_mode_get_failure_raises():
+    get_resp = _mock_response(500)
+    with patch.object(lf.requests, 'get', return_value=get_resp):
+        with pytest.raises(RuntimeError, match='Failed to get Eco mode'):
+            lf.change_battery_eco_mode(True)
+
+
+def test_change_battery_eco_mode_post_failure_raises():
+    get_resp = _mock_response(200, {'data': {'enabled': False}})
+    post_resp = _mock_response(500)
+    with patch.object(lf.requests, 'get', return_value=get_resp), \
+         patch.object(lf.requests, 'post', return_value=post_resp):
+        with pytest.raises(RuntimeError, match='Failed to change Eco mode'):
+            lf.change_battery_eco_mode(True)
 
 
 # --- handle_battery_export ---

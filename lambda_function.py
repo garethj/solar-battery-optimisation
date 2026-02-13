@@ -104,7 +104,7 @@ def get_ev_charging_api_authorisation():
         log('Successfully retrieved Octopus Energy API authorisation token')
         api_token = response.json()['data']['obtainKrakenToken']['token']
     else:
-        send_notification_to_user(f'Failed to retrieve Octopus Energy API authorisation token: {response.text}')
+        log(f'Warning: Failed to retrieve Octopus Energy API authorisation token: {response.text}')
         api_token = None
     return api_token
 
@@ -136,7 +136,7 @@ def get_ev_charging_schedule(script_start_time):
         plannedDispatches = response.json()['data']['plannedDispatches']
         log(f'Successfully retrieved Octopus Energy EV charging schedule: {plannedDispatches}')
     else:
-        send_notification_to_user(f'Failed to retrieve Octopus Energy EV charging schedule: {response.text}')
+        log(f'Warning: Failed to retrieve Octopus Energy EV charging schedule: {response.text}')
         plannedDispatches = None
     return plannedDispatches
 
@@ -365,7 +365,7 @@ def get_recent_consumption(start_time):
         consumption = response.json()['data']
         log('Successfully retrieved recent consumption data')
     else:
-        send_notification_to_user(f'Failed to get recent consumption data: {response.text}')
+        log(f'Warning: Failed to get recent consumption data: {response.text}')
         consumption = []
     return consumption
 
@@ -493,7 +493,7 @@ def start_battery_export(script_start_time, desired_end_time):
         if response.status_code == 201:
             log(f'Starting battery export to discharge by {desired_export_end}')
         else:
-            send_notification_to_user(f'Failed to set battery export timing: {response.text}')
+            raise RuntimeError(f'Failed to set battery export timing: {response.text}')
     else:
         log('Current export settings match desired ones, so doing nothing')
 
@@ -507,7 +507,7 @@ def disable_battery_export():
         if response.status_code == 201:
             log('Export successfully disabled')
         else:
-            send_notification_to_user(f'Failed to turn off battery export: {response.text}')
+            raise RuntimeError(f'Failed to turn off battery export: {response.text}')
     else:
         log('Export is already turned off')
 
@@ -530,11 +530,11 @@ def change_battery_eco_mode(enabled):
                 else:
                     log(f'Successfully turned off Eco mode')
             else:
-                send_notification_to_user(f'Failed to change Eco mode: {response.text}')
+                raise RuntimeError(f'Failed to change Eco mode: {response.text}')
         else:
             log(f'Eco mode is already {enabled}, so doing nothing')
     else:
-        send_notification_to_user(f'Failed to get Eco mode: {response.text}')
+        raise RuntimeError(f'Failed to get Eco mode: {response.text}')
 
 def turn_on_battery_eco_mode():
     change_battery_eco_mode(True)
