@@ -1,8 +1,3 @@
-# TODO
-# - Throw exceptions on failures instead of sending notification, so script exits nicely rather than breaking
-# - Put code on GitHub to (a) improve my external reputation, and (b) learn how to develop Llambda with version control (and another IDE?)
-# - Remove any unused variables or functions
-# - Create alerts for when I near AWS Lambda free tier limits
 import os
 from datetime import datetime, timedelta, time
 import zoneinfo
@@ -25,7 +20,6 @@ END_EVENING_EXPORT_MINUTE = 30
 CONSUMPTION_PREDICTION_VARIANCE_PERCENT = 10 # % to increase consumption prediction by, in case we use more today, to ensure we don't discharge too much
 CONSUMPTION_AVERAGE_DAYS = 7 # Number of days to average consumption over (weekday + weekend coverage)
 PEAK_GENERATION_FORECAST_VARIANCE_PERCENT = 5 # % generation forecast needs to be below inverter maximum to discharge before peak
-SOLAR_GENERATION_EXPORT_END_KW = 0.5 # Aim to finish morning export when solar generation reaches this kW (if generation doesn't reach inverter max today)
 MINS_TO_ALLOW_FOR_SOLAR_EXPORT_CHANGES = 30 # Minutes to add to export time to account for solar forecast changes (e.g. peak forecast changes from 10:30 to 11:00 during export)
 
 # CONSTANTS
@@ -56,7 +50,6 @@ GIVENERGY_INVERTER_MAX_KW = 3.68
 GIVENERGY_BATTERY_DISCHARGE_MINUTES_PER_PERCENT = (GIVENERGY_USABLE_BATTERY_SIZE_KWH / GIVENERGY_DISCHARGE_POWER_KW / 100) * 60
 GIVENERGY_MIN_BATTERY_PERCENT = 4
 SOLCAST_URL = 'https://api.solcast.com.au/rooftop_sites/' + SOLCAST_PROPERTY_ID + '/forecasts?format=json&api_key=' + SOLCAST_API_KEY
-SOLCAST_OPTIMISM_OPTIMISTIC = 'pv_estimate90'
 SOLCAST_OPTIMISM_NORMAL = 'pv_estimate'
 SOLCAST_OPTIMISM_PESSIMISTIC = 'pv_estimate10'
 SOLAR_GENERATION_EXPORT_PEAK_KW = GIVENERGY_INVERTER_MAX_KW - GIVENERGY_DISCHARGE_POWER_KW # Max solar generation before we can't discharge battery at full power
@@ -86,17 +79,6 @@ def get_time_in_server_timezone(time_in_other_timezone):
      # Script doesn't necessarily run in UK time (likely UTC)
     server_time = time_in_other_timezone.astimezone(datetime.now().astimezone().tzinfo)
     return server_time
-
-def ensure_time_is_not_now(time):
-    now = datetime.now(UK_TIMEZONE)
-    time_difference = abs(time - now)
-    time_delta = timedelta(minutes=2)
-    if time_difference <= time_delta:
-        new_time = time + time_delta
-        log(f'{time:%H:%M} is within a couple of minutes from now, so adding a couple of minutes to it (new time: {new_time:%H:%M})')
-    else:
-        new_time = time
-    return new_time
 
 def get_ev_charging_api_authorisation():
     log('Getting Octopus Energy API authorisation token')
@@ -411,10 +393,6 @@ def predict_consumption(start_time, end_time):
         log(f'No consumption data found for the last {CONSUMPTION_AVERAGE_DAYS} days')
     return average_consumption
 
-def get_max_amount_to_export_from_battery():
-    max_export = max(100 - GIVENERGY_MIN_BATTERY_PERCENT, 0)
-    return max_export
-
 def get_current_amount_to_export_from_battery():
     battery_soc = get_battery_soc()
     amount_to_export = max(battery_soc - GIVENERGY_MIN_BATTERY_PERCENT, 0)
@@ -580,17 +558,6 @@ def stop_discharging_battery():
 
 def stop_charging_battery(script_start_time, desired_end_time):
     change_battery_eco_mode(False)
-
-def get_time_to_check_on_export(script_start_time, export_end_time):
-    check_time = None
-    time_difference = export_end_time - script_start_time
-    if time_difference <= timedelta(minutes=20):
-        check_time = export_end_time
-        log(f'Export end time {export_end_time:%H:%M} is less than 20 minutes from now, so will check at end of export')
-    else:
-        check_time = script_start_time + (time_difference / 2)
-        log(f'Export end time {export_end_time:%H:%M} is greater than 20 minutes from now, so will check at {check_time:%H:%M}')
-    return check_time
 
 def handle_battery_export(script_start_time, export_end_time, battery_reserve=0, export_now=False, solar_forecast=None):
     log(f'Aiming to end export by {export_end_time:%H:%M} (leaving {battery_reserve:.0f}% usable battery for consumption)')

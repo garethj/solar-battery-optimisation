@@ -97,9 +97,8 @@ def test_get_battery_percentage_for_consumption_zero():
 # --- get_minutes_needed_to_export_battery_at_full_power ---
 
 def test_get_minutes_needed_to_export_full_battery():
-    max_export = lf.get_max_amount_to_export_from_battery()  # 96%
+    max_export = 96  # 100% - 4% min battery
     minutes = lf.get_minutes_needed_to_export_battery_at_full_power(max_export)
-    # 96 * (5.22 * 0.80 / 2.6 / 100) * 60 ≈ 92.4 minutes
     expected = max_export * lf.GIVENERGY_BATTERY_DISCHARGE_MINUTES_PER_PERCENT
     assert abs(minutes - expected) < 0.01
 
@@ -296,15 +295,6 @@ def test_predict_consumption_no_data_returns_zero():
     with patch.object(lf, 'get_recent_consumption', return_value=[]):
         result = lf.predict_consumption(start, end)
     assert result == 0
-
-
-# --- ensure_time_is_not_now ---
-
-def test_ensure_time_is_not_now_far_from_now():
-    """Time far from now should be returned unchanged."""
-    far_time = datetime(2099, 1, 1, 12, 0, tzinfo=UK)
-    result = lf.ensure_time_is_not_now(far_time)
-    assert result == far_time
 
 
 # --- get_remaining_solar_generation_for_today ---
