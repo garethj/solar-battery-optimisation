@@ -501,7 +501,7 @@ def test_start_battery_export_skips_when_already_correct():
 
 def test_disable_battery_export_when_enabled():
     post_resp = _mock_response(201)
-    with patch.object(lf, 'get_battery_export_status', return_value=True), \
+    with patch.object(lf, 'get_battery_export_settings', return_value={'enabled': True}), \
          patch.object(lf.requests, 'post', return_value=post_resp) as mock_post:
         lf.disable_battery_export()
     mock_post.assert_called_once()
@@ -509,7 +509,7 @@ def test_disable_battery_export_when_enabled():
 
 
 def test_disable_battery_export_already_off():
-    with patch.object(lf, 'get_battery_export_status', return_value=False), \
+    with patch.object(lf, 'get_battery_export_settings', return_value={'enabled': False}), \
          patch.object(lf.requests, 'post') as mock_post:
         lf.disable_battery_export()
     mock_post.assert_not_called()
@@ -540,7 +540,7 @@ def test_change_battery_eco_mode_already_correct():
 def test_handle_battery_export_starts_when_time_to_export():
     t = datetime(2025, 6, 15, 10, 0, tzinfo=UK)
     end = datetime(2025, 6, 15, 11, 30, tzinfo=UK)  # 90 mins
-    with patch.object(lf, 'get_current_amount_to_export_from_battery', return_value=50), \
+    with patch.object(lf, 'get_battery_soc', return_value=54), \
          patch.object(lf, 'get_minutes_needed_to_export_battery', return_value=100), \
          patch.object(lf, 'get_minutes_left_to_export_battery', return_value=90), \
          patch.object(lf, 'start_battery_export') as mock_start:
@@ -551,7 +551,7 @@ def test_handle_battery_export_starts_when_time_to_export():
 def test_handle_battery_export_waits_when_too_early():
     t = datetime(2025, 6, 15, 8, 0, tzinfo=UK)
     end = datetime(2025, 6, 15, 12, 0, tzinfo=UK)  # 240 mins
-    with patch.object(lf, 'get_current_amount_to_export_from_battery', return_value=50), \
+    with patch.object(lf, 'get_battery_soc', return_value=54), \
          patch.object(lf, 'get_minutes_needed_to_export_battery', return_value=60), \
          patch.object(lf, 'get_minutes_left_to_export_battery', return_value=240), \
          patch.object(lf, 'turn_on_battery_eco_mode') as mock_eco:
@@ -563,7 +563,7 @@ def test_handle_battery_export_battery_too_low():
     t = datetime(2025, 6, 15, 10, 0, tzinfo=UK)
     end = datetime(2025, 6, 15, 12, 0, tzinfo=UK)
     # Battery at 4% (min), so amount_to_export = 0
-    with patch.object(lf, 'get_current_amount_to_export_from_battery', return_value=0), \
+    with patch.object(lf, 'get_battery_soc', return_value=4), \
          patch.object(lf, 'turn_on_battery_eco_mode') as mock_eco:
         lf.handle_battery_export(t, end)
     mock_eco.assert_called_once()

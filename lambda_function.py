@@ -137,13 +137,11 @@ def get_ev_charging_schedule(script_start_time):
     return plannedDispatches
 
 def ev_is_plugged_in(script_start_time, ev_schedule):
-    plugged_in = False
-    if ev_schedule is not None and len(ev_schedule) > 0: # Assume EV is plugged in if a charging schedule exists
-        plugged_in = True
+    if ev_schedule: # Assume EV is plugged in if a charging schedule exists
         log('EV is plugged in')
-    else:
-        log('EV is not plugged in')
-    return plugged_in
+        return True
+    log('EV is not plugged in')
+    return False
 
 def get_current_ev_charging_slot(script_start_time, ev_schedule):
     current_charging_slot = None
@@ -168,14 +166,12 @@ def get_next_ev_charging_slot(script_start_time, ev_schedule):
     return next_charging_slot
 
 def ev_is_charging(script_start_time, ev_schedule):
-    is_charging = False
     current_charging_slot = get_current_ev_charging_slot(script_start_time, ev_schedule)
     if current_charging_slot:
-        is_charging = True
         log('EV is charging right now')
-    else:
-        log('EV is not currently charging')
-    return is_charging
+        return True
+    log('EV is not currently charging')
+    return False
 
 def get_end_time_for_ev_charging_slot(charging_slot):
     return datetime.fromisoformat(charging_slot['end']).astimezone(UK_TIMEZONE)
@@ -184,21 +180,20 @@ def get_start_time_for_ev_charging_slot(charging_slot):
     return datetime.fromisoformat(charging_slot['start']).astimezone(UK_TIMEZONE)
 
 def get_current_ev_charging_slot_end_time(script_start_time, ev_schedule):
-    time = None
+    slot_end_time = None
     charging_slot = get_current_ev_charging_slot(script_start_time, ev_schedule)
     if charging_slot:
-        time = get_end_time_for_ev_charging_slot(charging_slot)
-    return time
+        slot_end_time = get_end_time_for_ev_charging_slot(charging_slot)
+    return slot_end_time
 
 def get_next_ev_charging_slot_start_time(script_start_time, ev_schedule):
-    time = None
+    slot_start_time = None
     charging_slot = get_next_ev_charging_slot(script_start_time, ev_schedule)
     if charging_slot:
-        time = get_start_time_for_ev_charging_slot(charging_slot)
-    return time
+        slot_start_time = get_start_time_for_ev_charging_slot(charging_slot)
+    return slot_start_time
 
 def handle_ev_charging(script_start_time, ev_schedule):
-    end_time = get_current_ev_charging_slot_end_time(script_start_time, ev_schedule)
     stop_discharging_battery()
 
 def get_remaining_solar_generation_for_today(script_start_time, solar_forecast, forecast_optimism=SOLCAST_OPTIMISM_NORMAL):
@@ -266,15 +261,13 @@ def get_off_peak_start(script_start_time):
     return create_time_from_hour_minute(TARIFF_OFF_PEAK_START_HOUR, TARIFF_OFF_PEAK_START_MINUTE, date=script_start_time.date())
 
 def is_in_off_peak(script_start_time):
-    in_off_peak = False
     tariff_off_peak_start = get_off_peak_start(script_start_time)
     tariff_peak_start = create_time_from_hour_minute(TARIFF_PEAK_START_HOUR, TARIFF_PEAK_START_MINUTE, date=script_start_time.date())
     if script_start_time >= tariff_off_peak_start or script_start_time < tariff_peak_start:
-        in_off_peak = True
         log(f'In off peak hours')
-    else:
-        log(f'In peak hours')
-    return in_off_peak
+        return True
+    log(f'In peak hours')
+    return False
 
 def is_in_peak(script_start_time):
     return not is_in_off_peak(script_start_time)
@@ -393,11 +386,6 @@ def predict_consumption(start_time, end_time):
         log(f'No consumption data found for the last {CONSUMPTION_AVERAGE_DAYS} days')
     return average_consumption
 
-def get_current_amount_to_export_from_battery():
-    battery_soc = get_battery_soc()
-    amount_to_export = max(battery_soc - GIVENERGY_MIN_BATTERY_PERCENT, 0)
-    return amount_to_export
-
 def get_minutes_left_to_export_battery(start_time, end_time):
     time_left_to_export = end_time - start_time
     seconds_left_to_export = time_left_to_export.total_seconds()
@@ -505,13 +493,8 @@ def start_battery_export(script_start_time, desired_end_time):
     else:
         log('Current export settings match desired ones, so doing nothing')
 
-def get_battery_export_status():
-    settings = get_battery_export_settings()
-    current_export_status = settings['enabled']
-    return current_export_status
-
 def disable_battery_export():
-    current_export_status = get_battery_export_status()
+    current_export_status = get_battery_export_settings()['enabled']
     if current_export_status:
         log('Export is turned on, so need to disable it')
         response = requests.post(url=GIVENERGY_EXPORT_URL, headers=GIVENERGY_HEADERS, json={
@@ -562,7 +545,7 @@ def stop_charging_battery(script_start_time, desired_end_time):
 def handle_battery_export(script_start_time, export_end_time, battery_reserve=0, export_now=False, solar_forecast=None):
     log(f'Aiming to end export by {export_end_time:%H:%M} (leaving {battery_reserve:.0f}% usable battery for consumption)')
     if script_start_time < export_end_time:
-        amount_to_export = get_current_amount_to_export_from_battery()
+        amount_to_export = max(get_battery_soc() - GIVENERGY_MIN_BATTERY_PERCENT, 0)
         amount_to_export = max(amount_to_export - battery_reserve, 0)
         log(f'We want to export {amount_to_export:.0f}% (leaving {battery_reserve:.0f}% usable battery for consumption)')
         if amount_to_export > 0:
