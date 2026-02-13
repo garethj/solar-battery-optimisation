@@ -23,6 +23,7 @@ S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME')
 END_EVENING_EXPORT_HOUR = 23 # End export by 21:30 to avoid noisy iBoost+ near bedtime
 END_EVENING_EXPORT_MINUTE = 30
 CONSUMPTION_PREDICTION_VARIANCE_PERCENT = 10 # % to increase consumption prediction by, in case we use more today, to ensure we don't discharge too much
+CONSUMPTION_AVERAGE_DAYS = 7 # Number of days to average consumption over (weekday + weekend coverage)
 PEAK_GENERATION_FORECAST_VARIANCE_PERCENT = 5 # % generation forecast needs to be below inverter maximum to discharge before peak
 SOLAR_GENERATION_EXPORT_END_KW = 0.5 # Aim to finish morning export when solar generation reaches this kW (if generation doesn't reach inverter max today)
 MINS_TO_ALLOW_FOR_SOLAR_EXPORT_CHANGES = 30 # Minutes to add to export time to account for solar forecast changes (e.g. peak forecast changes from 10:30 to 11:00 during export)
@@ -390,16 +391,25 @@ def get_recent_consumption(start_time):
     return consumption
 
 def predict_consumption(start_time, end_time):
-    yesterday_start_time = start_time - timedelta(days=1, minutes=5)
-    yesterday_end_time = end_time - timedelta(days=1, minutes=-5)
     recent_consumption = get_recent_consumption(start_time)
-    time_period_consumption_yesterday = 0
-    for consumption_period in recent_consumption:
-        consumption_period_time = datetime.fromisoformat(consumption_period['time']).astimezone(UK_TIMEZONE)
-        if consumption_period_time >= yesterday_start_time and consumption_period_time <= yesterday_end_time:
-            time_period_consumption_yesterday += (consumption_period['today']['consumption'] / 1000)
-    log(f'Total consumption yesterday between {start_time:%H:%M} and {end_time:%H:%M} was {time_period_consumption_yesterday:.3f} kWh')
-    return time_period_consumption_yesterday
+    daily_totals = []
+    for days_ago in range(1, CONSUMPTION_AVERAGE_DAYS + 1):
+        day_start = start_time - timedelta(days=days_ago, minutes=5)
+        day_end = end_time - timedelta(days=days_ago, minutes=-5)
+        day_total = 0
+        for consumption_period in recent_consumption:
+            consumption_period_time = datetime.fromisoformat(consumption_period['time']).astimezone(UK_TIMEZONE)
+            if consumption_period_time >= day_start and consumption_period_time <= day_end:
+                day_total += (consumption_period['today']['consumption'] / 1000)
+        if day_total > 0:
+            daily_totals.append(day_total)
+    if daily_totals:
+        average_consumption = sum(daily_totals) / len(daily_totals)
+        log(f'Average consumption between {start_time:%H:%M} and {end_time:%H:%M} over {len(daily_totals)} days: {average_consumption:.3f} kWh')
+    else:
+        average_consumption = 0
+        log(f'No consumption data found for the last {CONSUMPTION_AVERAGE_DAYS} days')
+    return average_consumption
 
 def get_max_amount_to_export_from_battery():
     max_export = max(100 - GIVENERGY_MIN_BATTERY_PERCENT, 0)

@@ -249,3 +249,50 @@ def test_should_update_solar_forecast_off_peak_returns_false():
     """During off-peak, never update."""
     t = datetime(2025, 6, 15, 3, 0, tzinfo=UK)
     assert lf.should_update_solar_forecast(t) is False
+
+
+# --- predict_consumption (7-day averaging) ---
+
+def _make_consumption_data(base_date, hour, minute, consumption_wh, days_ago):
+    """Create a consumption data point for a given number of days ago."""
+    dt = datetime(base_date.year, base_date.month, base_date.day, hour, minute, tzinfo=UK) - timedelta(days=days_ago)
+    return {
+        'time': dt.isoformat(),
+        'today': {'consumption': consumption_wh}
+    }
+
+
+def test_predict_consumption_averages_multiple_days():
+    start = datetime(2025, 6, 15, 12, 0, tzinfo=UK)
+    end = datetime(2025, 6, 15, 23, 30, tzinfo=UK)
+    # Create data for 3 days: 1000Wh, 2000Wh, 3000Wh at 15:00
+    data = [
+        _make_consumption_data(date(2025, 6, 15), 15, 0, 1000, days_ago=1),
+        _make_consumption_data(date(2025, 6, 15), 15, 0, 2000, days_ago=2),
+        _make_consumption_data(date(2025, 6, 15), 15, 0, 3000, days_ago=3),
+    ]
+    with patch.object(lf, 'get_recent_consumption', return_value=data):
+        result = lf.predict_consumption(start, end)
+    # Average: (1.0 + 2.0 + 3.0) / 3 = 2.0 kWh
+    assert abs(result - 2.0) < 0.01
+
+
+def test_predict_consumption_excludes_zero_data_days():
+    start = datetime(2025, 6, 15, 12, 0, tzinfo=UK)
+    end = datetime(2025, 6, 15, 23, 30, tzinfo=UK)
+    # Only 1 day has data in the time window
+    data = [
+        _make_consumption_data(date(2025, 6, 15), 15, 0, 1500, days_ago=1),
+    ]
+    with patch.object(lf, 'get_recent_consumption', return_value=data):
+        result = lf.predict_consumption(start, end)
+    # Only 1 day with data: 1.5 kWh
+    assert abs(result - 1.5) < 0.01
+
+
+def test_predict_consumption_no_data_returns_zero():
+    start = datetime(2025, 6, 15, 12, 0, tzinfo=UK)
+    end = datetime(2025, 6, 15, 23, 30, tzinfo=UK)
+    with patch.object(lf, 'get_recent_consumption', return_value=[]):
+        result = lf.predict_consumption(start, end)
+    assert result == 0
