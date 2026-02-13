@@ -229,6 +229,8 @@ def ev_is_charging(script_start_time: datetime, ev_schedule: list[dict]) -> bool
     return False
 
 def handle_ev_charging(script_start_time: datetime, ev_schedule: list[dict]) -> None:
+    # Stop discharge because exported power flows into the car via AC coupling
+    # instead of to the grid
     stop_discharging_battery()
 
 # ── Solar forecast ──
@@ -339,6 +341,7 @@ def get_solar_generation_kw_time(
     want_peak_generation: bool = False,
     forecast_optimism: str = SOLCAST_OPTIMISM_NORMAL,
 ) -> datetime | None:
+    """Find when solar generation reaches (or drops below) a threshold."""
     stats = _collect_generation_stats(script_start_time, solar_forecast, generation_kw, want_generation_end_time, forecast_optimism)
     earliest_any_generation_time = stats['earliest_any_time']
     earliest_any_generation_kw = stats['earliest_any_kw']
@@ -364,6 +367,8 @@ def get_solar_generation_kw_time(
     return requested_generation_time
 
 def get_solar_generation_peak_start(script_start_time: datetime, solar_forecast: list[dict]) -> datetime | None:
+    # Use the normal (not pessimistic) forecast for peak detection — we want to
+    # time discharge for the most likely solar peak, not the worst case
     return get_solar_generation_kw_time(script_start_time, solar_forecast, SOLAR_GENERATION_PEAK_FORECAST_KW, want_generation_end_time=False, want_peak_generation=True, forecast_optimism=SOLCAST_OPTIMISM_NORMAL)
 
 # ── Battery status & consumption ──
@@ -413,9 +418,12 @@ def get_recent_consumption(start_time: datetime) -> list[dict]:
     return consumption
 
 def predict_consumption(start_time: datetime, end_time: datetime) -> float:
+    """Average household consumption over recent days for the given time window."""
     recent_consumption = get_recent_consumption(start_time)
     daily_totals = []
     for days_ago in range(1, CONSUMPTION_AVERAGE_DAYS + 1):
+        # Widen the matching window by ±CONSUMPTION_TIME_TOLERANCE_MINUTES because
+        # data points don't land exactly on the boundary times
         day_start = start_time - timedelta(days=days_ago, minutes=CONSUMPTION_TIME_TOLERANCE_MINUTES)
         day_end = end_time - timedelta(days=days_ago, minutes=-CONSUMPTION_TIME_TOLERANCE_MINUTES)
         day_total = 0
@@ -434,6 +442,9 @@ def predict_consumption(start_time: datetime, end_time: datetime) -> float:
     return average_consumption
 
 def get_battery_percent_needed_for_consumption(script_start_time: datetime, solar_forecast: list[dict], end_time: datetime) -> float:
+    """Calculate battery reserve needed for consumption until off-peak starts."""
+    # Use pessimistic solar forecast to avoid over-exporting — better to have
+    # spare battery than to buy expensive peak electricity
     total_generation = get_remaining_solar_generation_for_today(script_start_time, solar_forecast, SOLCAST_OPTIMISM_PESSIMISTIC)
     total_consumption = predict_consumption(script_start_time, end_time)
     total_consumption *= (1 + (CONSUMPTION_PREDICTION_VARIANCE_PERCENT / 100))
@@ -555,6 +566,13 @@ def get_minutes_needed_to_export_battery_at_full_power(amount_to_export: float) 
     return total_minutes_to_export
 
 def _calculate_solar_adjusted_export_minutes(script_start_time: datetime, export_end_time: datetime, solar_forecast: list[dict], minimum_minutes_to_export: float) -> float:
+    """Calculate real minutes needed to export, accounting for solar reducing discharge rate.
+
+    Iterates backwards from export_end_time because we want the battery to arrive
+    empty at the solar peak. Solar generation and battery discharge share the
+    inverter's 3.68 kW capacity, so high solar output reduces how fast the battery
+    can discharge to grid.
+    """
     relevant_forecasts = [
         f for f in solar_forecast
         if script_start_time < datetime.fromisoformat(f['period_end']) <= export_end_time
@@ -601,6 +619,7 @@ def get_minutes_needed_to_export_battery(script_start_time: datetime, amount_to_
 # ── Orchestration ──
 
 def handle_battery_export(script_start_time: datetime, export_end_time: datetime, battery_reserve: float = 0, export_now: bool = False, solar_forecast: list[dict] | None = None) -> None:
+    """Export battery to grid, timing discharge to finish by export_end_time."""
     logger.info(f'Aiming to end export by {export_end_time:%H:%M} (leaving {battery_reserve:.0f}% usable battery for consumption)')
     if script_start_time < export_end_time:
         amount_to_export = max(get_battery_soc() - GIVENERGY_MIN_BATTERY_PERCENT, 0)
@@ -637,6 +656,7 @@ def run_action_for_ev_plugged_in(script_start_time: datetime, ev_schedule: list[
             logger.info('EV charging has finished')
 
 def run_action_based_on_current_time(script_start_time: datetime) -> None:
+    """Core decision: choose battery action based on tariff period, EV status, and solar forecast."""
     tariff_off_peak_start = get_off_peak_start(script_start_time)
     in_off_peak = is_in_off_peak(script_start_time)
     if in_off_peak:
@@ -660,6 +680,7 @@ def run_action_based_on_current_time(script_start_time: datetime) -> None:
 # ── Entry points ──
 
 def lambda_handler(event: dict | None, context: object | None) -> dict:
+    """AWS Lambda entry point. Catches all errors and notifies user via push notification."""
     try:
         script_start_time = datetime.now(UK_TIMEZONE)
         logger.info(f'Starting script at {script_start_time:%H:%M} (server time: {get_time_in_server_timezone(script_start_time):%H:%M})')
