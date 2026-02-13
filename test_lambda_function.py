@@ -192,3 +192,26 @@ def test_get_current_ev_charging_slot_end_time_in_slot():
     schedule = [{'start': '2025-06-15T23:30:00+01:00', 'end': '2025-06-16T05:30:00+01:00'}]
     result = lf.get_current_ev_charging_slot_end_time(t, schedule)
     assert result == datetime(2025, 6, 16, 5, 30, tzinfo=UK)
+
+
+# --- export_settings_need_updating (renamed from battery_export_is_already_set_correctly) ---
+
+def test_export_settings_need_updating_when_disabled():
+    settings = {'enabled': False, 'slots': [{'end_time': '23:30'}]}
+    desired_end = datetime(2025, 6, 15, 23, 30, tzinfo=UK)
+    with patch.object(lf, 'get_battery_export_settings', return_value=settings):
+        assert lf.export_settings_need_updating(desired_end) is True
+
+
+def test_export_settings_need_updating_when_end_time_differs():
+    settings = {'enabled': True, 'slots': [{'end_time': '22:00'}]}
+    desired_end = datetime(2025, 6, 15, 23, 30, tzinfo=UK)
+    with patch.object(lf, 'get_battery_export_settings', return_value=settings):
+        assert lf.export_settings_need_updating(desired_end) is True
+
+
+def test_export_settings_no_update_needed():
+    settings = {'enabled': True, 'slots': [{'end_time': '23:30'}]}
+    desired_end = datetime(2025, 6, 15, 23, 30, tzinfo=UK)
+    with patch.object(lf, 'get_battery_export_settings', return_value=settings):
+        assert lf.export_settings_need_updating(desired_end) is False

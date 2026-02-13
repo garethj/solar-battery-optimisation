@@ -485,16 +485,16 @@ def get_battery_export_settings():
     else:
         raise RuntimeError(f'Failed to get current battery export settings: {response.text}')
 
-def battery_export_is_already_set_correctly(desired_end_time):
+def export_settings_need_updating(desired_end_time):
     settings = get_battery_export_settings()
     current_export_status = settings['enabled']
     current_export_end = settings['slots'][0]['end_time']
     desired_export_end = desired_end_time.strftime('%H:%M')
-    set_correctly = current_export_status != True or current_export_end != desired_export_end
-    return set_correctly
+    need_updating = current_export_status != True or current_export_end != desired_export_end
+    return need_updating
 
 def start_battery_export(script_start_time, desired_end_time):
-    need_to_start_export = battery_export_is_already_set_correctly(desired_end_time)
+    need_to_start_export = export_settings_need_updating(desired_end_time)
     if need_to_start_export:
         log('Current export settings do not match desired settings')
         desired_export_start = script_start_time.strftime('%H:%M')
