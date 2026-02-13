@@ -296,3 +296,353 @@ def test_predict_consumption_no_data_returns_zero():
     with patch.object(lf, 'get_recent_consumption', return_value=[]):
         result = lf.predict_consumption(start, end)
     assert result == 0
+
+
+# --- ensure_time_is_not_now ---
+
+def test_ensure_time_is_not_now_far_from_now():
+    """Time far from now should be returned unchanged."""
+    far_time = datetime(2099, 1, 1, 12, 0, tzinfo=UK)
+    result = lf.ensure_time_is_not_now(far_time)
+    assert result == far_time
+
+
+# --- get_remaining_solar_generation_for_today ---
+
+def test_get_remaining_solar_generation_sums_today_only():
+    t = datetime(2025, 6, 15, 12, 0, tzinfo=UK)
+    forecast = [
+        {'period_end': '2025-06-15T13:00:00+01:00', 'pv_estimate': 1.5},
+        {'period_end': '2025-06-15T13:30:00+01:00', 'pv_estimate': 2.0},
+        {'period_end': '2025-06-16T13:00:00+01:00', 'pv_estimate': 3.0},  # tomorrow
+        {'period_end': '2025-06-15T11:00:00+01:00', 'pv_estimate': 1.0},  # before start_time
+    ]
+    result = lf.get_remaining_solar_generation_for_today(t, forecast)
+    assert abs(result - 3.5) < 0.01  # 1.5 + 2.0
+
+
+def test_get_remaining_solar_generation_empty_forecast():
+    t = datetime(2025, 6, 15, 12, 0, tzinfo=UK)
+    assert lf.get_remaining_solar_generation_for_today(t, []) == 0
+
+
+def test_get_remaining_solar_generation_pessimistic():
+    t = datetime(2025, 6, 15, 12, 0, tzinfo=UK)
+    forecast = [
+        {'period_end': '2025-06-15T13:00:00+01:00', 'pv_estimate': 2.0, 'pv_estimate10': 0.5},
+    ]
+    result = lf.get_remaining_solar_generation_for_today(t, forecast, lf.SOLCAST_OPTIMISM_PESSIMISTIC)
+    assert abs(result - 0.5) < 0.01
+
+
+# --- get_solar_generation_kw_time ---
+
+def _make_forecast(hour, minute, kw, day=15):
+    """Helper: create a forecast period ending at the given hour:minute on June day."""
+    return {
+        'period_end': f'2025-06-{day:02d}T{hour:02d}:{minute:02d}:00+01:00',
+        'pv_estimate': kw,
+    }
+
+
+def test_get_solar_generation_kw_time_finds_earliest_start():
+    t = datetime(2025, 6, 15, 6, 0, tzinfo=UK)
+    forecast = [
+        _make_forecast(8, 0, 0.5),
+        _make_forecast(9, 0, 2.0),
+        _make_forecast(10, 0, 3.5),
+        _make_forecast(11, 0, 3.0),
+    ]
+    result = lf.get_solar_generation_kw_time(t, forecast, 2.0, want_generation_end_time=False)
+    # Earliest period where generation >= 2.0 kW, using start time (period_end - 30min)
+    assert result == datetime(2025, 6, 15, 8, 30, tzinfo=UK)
+
+
+def test_get_solar_generation_kw_time_finds_latest_end():
+    t = datetime(2025, 6, 15, 6, 0, tzinfo=UK)
+    forecast = [
+        _make_forecast(9, 0, 2.0),
+        _make_forecast(10, 0, 3.5),
+        _make_forecast(11, 0, 2.5),
+        _make_forecast(12, 0, 1.0),
+    ]
+    result = lf.get_solar_generation_kw_time(t, forecast, 2.0, want_generation_end_time=True)
+    # Latest period where generation >= 2.0 kW
+    assert result == datetime(2025, 6, 15, 11, 0, tzinfo=UK)
+
+
+def test_get_solar_generation_kw_time_no_match_returns_none():
+    t = datetime(2025, 6, 15, 6, 0, tzinfo=UK)
+    forecast = [
+        _make_forecast(9, 0, 0.5),
+        _make_forecast(10, 0, 0.8),
+    ]
+    result = lf.get_solar_generation_kw_time(t, forecast, 5.0, want_generation_end_time=False)
+    assert result is None
+
+
+def test_get_solar_generation_kw_time_peak_fallback():
+    """When generation never reaches target, fall back to max if want_peak_generation."""
+    t = datetime(2025, 6, 15, 8, 0, tzinfo=UK)
+    forecast = [
+        _make_forecast(9, 0, 0.5),
+        _make_forecast(10, 0, 2.0),
+        _make_forecast(11, 0, 1.0),
+    ]
+    result = lf.get_solar_generation_kw_time(
+        t, forecast, 5.0, want_generation_end_time=False, want_peak_generation=True
+    )
+    # Max generation is 2.0 at 09:30 (start of period ending 10:00)
+    assert result == datetime(2025, 6, 15, 9, 30, tzinfo=UK)
+
+
+# --- get_solar_generation_peak_start ---
+
+def test_get_solar_generation_peak_start_sunny_day():
+    t = datetime(2025, 6, 15, 6, 0, tzinfo=UK)
+    forecast = [
+        _make_forecast(8, 0, 0.5),
+        _make_forecast(9, 0, 1.5),
+        _make_forecast(10, 0, 3.5),  # >= SOLAR_GENERATION_PEAK_FORECAST_KW (~3.496)
+        _make_forecast(11, 0, 3.6),
+    ]
+    result = lf.get_solar_generation_peak_start(t, forecast)
+    assert result == datetime(2025, 6, 15, 9, 30, tzinfo=UK)
+
+
+# --- get_minutes_needed_to_export_battery (with solar forecast) ---
+
+def test_get_minutes_needed_to_export_with_solar_reduces_rate():
+    t = datetime(2025, 6, 15, 8, 0, tzinfo=UK)
+    export_end = datetime(2025, 6, 15, 11, 0, tzinfo=UK)
+    # Solar above SOLAR_GENERATION_EXPORT_PEAK_KW (1.08) reduces discharge
+    forecast = [
+        _make_forecast(9, 0, 0.5),    # no reduction
+        _make_forecast(9, 30, 1.5),   # exceeds 1.08, reduces discharge
+        _make_forecast(10, 0, 2.0),   # exceeds 1.08, reduces more
+        _make_forecast(10, 30, 0.8),  # no reduction
+        _make_forecast(11, 0, 0.3),   # no reduction
+    ]
+    # Small amount to export, so solar impact is visible
+    result = lf.get_minutes_needed_to_export_battery(t, 10, export_end_time=export_end, solar_forecast=forecast)
+    full_power_mins = lf.get_minutes_needed_to_export_battery_at_full_power(10)
+    # With solar slowing discharge, total time should be >= full power time
+    assert result >= full_power_mins
+
+
+def test_get_minutes_needed_to_export_without_solar():
+    t = datetime(2025, 6, 15, 8, 0, tzinfo=UK)
+    result = lf.get_minutes_needed_to_export_battery(t, 50)
+    expected = lf.get_minutes_needed_to_export_battery_at_full_power(50)
+    assert result == expected
+
+
+# --- get_minutes_left_to_export_battery ---
+
+def test_get_minutes_left_to_export_battery():
+    start = datetime(2025, 6, 15, 10, 0, tzinfo=UK)
+    end = datetime(2025, 6, 15, 11, 30, tzinfo=UK)
+    assert lf.get_minutes_left_to_export_battery(start, end) == 90
+
+
+# --- get_ev_charging_schedule ---
+
+def test_get_ev_charging_schedule_success():
+    auth_resp = _mock_response(200, {'data': {'obtainKrakenToken': {'token': 'tok123'}}})
+    schedule_resp = _mock_response(200, {'data': {'plannedDispatches': [{'start': 'a', 'end': 'b'}]}})
+    with patch.object(lf.requests, 'post', side_effect=[auth_resp, schedule_resp]):
+        result = lf.get_ev_charging_schedule(datetime(2025, 6, 15, 12, 0, tzinfo=UK))
+    assert result == [{'start': 'a', 'end': 'b'}]
+
+
+def test_get_ev_charging_schedule_auth_failure():
+    auth_resp = _mock_response(401)
+    with patch.object(lf.requests, 'post', return_value=auth_resp):
+        result = lf.get_ev_charging_schedule(datetime(2025, 6, 15, 12, 0, tzinfo=UK))
+    assert result is None
+
+
+# --- get_solar_forecast ---
+
+def test_get_solar_forecast_fetches_fresh_when_needed():
+    t = datetime(2025, 6, 15, 10, 0, tzinfo=UK)
+    forecast_data = [{'period_end': '2025-06-15T12:00:00+01:00', 'pv_estimate': 2.0}]
+    resp = _mock_response(200, {'forecasts': forecast_data})
+    with patch.object(lf, 'should_update_solar_forecast', return_value=True), \
+         patch.object(lf.requests, 'get', return_value=resp):
+        result = lf.get_solar_forecast(t)
+    assert result == forecast_data
+
+
+def test_get_solar_forecast_uses_file_when_no_update():
+    t = datetime(2025, 6, 15, 10, 0, tzinfo=UK)
+    file_data = [{'period_end': '2025-06-15T12:00:00+01:00', 'pv_estimate': 1.0}]
+    with patch.object(lf, 'should_update_solar_forecast', return_value=False), \
+         patch.object(lf, 'get_solar_forecast_from_file', return_value=file_data):
+        result = lf.get_solar_forecast(t)
+    assert result == file_data
+
+
+# --- start_battery_export ---
+
+def test_start_battery_export_sends_request_when_needed():
+    t = datetime(2025, 6, 15, 10, 0, tzinfo=UK)
+    end = datetime(2025, 6, 15, 12, 0, tzinfo=UK)
+    post_resp = _mock_response(201)
+    with patch.object(lf, 'export_settings_need_updating', return_value=True), \
+         patch.object(lf.requests, 'post', return_value=post_resp) as mock_post:
+        lf.start_battery_export(t, end)
+    mock_post.assert_called_once()
+    call_json = mock_post.call_args.kwargs['json']
+    assert call_json['enabled'] is True
+    assert call_json['slots'][0]['end_time'] == '12:00'
+
+
+def test_start_battery_export_skips_when_already_correct():
+    t = datetime(2025, 6, 15, 10, 0, tzinfo=UK)
+    end = datetime(2025, 6, 15, 12, 0, tzinfo=UK)
+    with patch.object(lf, 'export_settings_need_updating', return_value=False), \
+         patch.object(lf.requests, 'post') as mock_post:
+        lf.start_battery_export(t, end)
+    mock_post.assert_not_called()
+
+
+# --- disable_battery_export ---
+
+def test_disable_battery_export_when_enabled():
+    post_resp = _mock_response(201)
+    with patch.object(lf, 'get_battery_export_status', return_value=True), \
+         patch.object(lf.requests, 'post', return_value=post_resp) as mock_post:
+        lf.disable_battery_export()
+    mock_post.assert_called_once()
+    assert mock_post.call_args.kwargs['json'] == {'enabled': False}
+
+
+def test_disable_battery_export_already_off():
+    with patch.object(lf, 'get_battery_export_status', return_value=False), \
+         patch.object(lf.requests, 'post') as mock_post:
+        lf.disable_battery_export()
+    mock_post.assert_not_called()
+
+
+# --- change_battery_eco_mode ---
+
+def test_change_battery_eco_mode_turns_on():
+    get_resp = _mock_response(200, {'data': {'enabled': False}})
+    post_resp = _mock_response(201)
+    with patch.object(lf.requests, 'get', return_value=get_resp), \
+         patch.object(lf.requests, 'post', return_value=post_resp) as mock_post:
+        lf.change_battery_eco_mode(True)
+    mock_post.assert_called_once()
+    assert mock_post.call_args.kwargs['json'] == {'enabled': True}
+
+
+def test_change_battery_eco_mode_already_correct():
+    get_resp = _mock_response(200, {'data': {'enabled': True}})
+    with patch.object(lf.requests, 'get', return_value=get_resp), \
+         patch.object(lf.requests, 'post') as mock_post:
+        lf.change_battery_eco_mode(True)
+    mock_post.assert_not_called()
+
+
+# --- handle_battery_export ---
+
+def test_handle_battery_export_starts_when_time_to_export():
+    t = datetime(2025, 6, 15, 10, 0, tzinfo=UK)
+    end = datetime(2025, 6, 15, 11, 30, tzinfo=UK)  # 90 mins
+    with patch.object(lf, 'get_current_amount_to_export_from_battery', return_value=50), \
+         patch.object(lf, 'get_minutes_needed_to_export_battery', return_value=100), \
+         patch.object(lf, 'get_minutes_left_to_export_battery', return_value=90), \
+         patch.object(lf, 'start_battery_export') as mock_start:
+        lf.handle_battery_export(t, end)
+    mock_start.assert_called_once_with(t, end)
+
+
+def test_handle_battery_export_waits_when_too_early():
+    t = datetime(2025, 6, 15, 8, 0, tzinfo=UK)
+    end = datetime(2025, 6, 15, 12, 0, tzinfo=UK)  # 240 mins
+    with patch.object(lf, 'get_current_amount_to_export_from_battery', return_value=50), \
+         patch.object(lf, 'get_minutes_needed_to_export_battery', return_value=60), \
+         patch.object(lf, 'get_minutes_left_to_export_battery', return_value=240), \
+         patch.object(lf, 'turn_on_battery_eco_mode') as mock_eco:
+        lf.handle_battery_export(t, end)
+    mock_eco.assert_called_once()
+
+
+def test_handle_battery_export_battery_too_low():
+    t = datetime(2025, 6, 15, 10, 0, tzinfo=UK)
+    end = datetime(2025, 6, 15, 12, 0, tzinfo=UK)
+    # Battery at 4% (min), so amount_to_export = 0
+    with patch.object(lf, 'get_current_amount_to_export_from_battery', return_value=0), \
+         patch.object(lf, 'turn_on_battery_eco_mode') as mock_eco:
+        lf.handle_battery_export(t, end)
+    mock_eco.assert_called_once()
+
+
+def test_handle_battery_export_past_end_time():
+    t = datetime(2025, 6, 15, 13, 0, tzinfo=UK)
+    end = datetime(2025, 6, 15, 12, 0, tzinfo=UK)  # already past
+    with patch.object(lf, 'turn_on_battery_eco_mode') as mock_eco:
+        lf.handle_battery_export(t, end)
+    mock_eco.assert_called_once()
+
+
+# --- run_action_based_on_current_time ---
+
+def test_run_action_off_peak():
+    t = datetime(2025, 6, 15, 3, 0, tzinfo=UK)
+    with patch.object(lf, 'turn_on_battery_eco_mode') as mock_eco:
+        lf.run_action_based_on_current_time(t)
+    mock_eco.assert_called_once()
+
+
+def test_run_action_peak_ev_plugged_in():
+    t = datetime(2025, 6, 15, 12, 0, tzinfo=UK)
+    ev_schedule = [{'start': '2025-06-15T23:30:00+01:00', 'end': '2025-06-16T05:30:00+01:00'}]
+    with patch.object(lf, 'get_ev_charging_schedule', return_value=ev_schedule), \
+         patch.object(lf, 'get_solar_forecast', return_value=[]), \
+         patch.object(lf, 'run_action_for_ev_plugged_in') as mock_ev:
+        lf.run_action_based_on_current_time(t)
+    mock_ev.assert_called_once_with(t, ev_schedule)
+
+
+def test_run_action_peak_before_solar_peak():
+    t = datetime(2025, 6, 15, 8, 0, tzinfo=UK)
+    solar_peak = datetime(2025, 6, 15, 11, 0, tzinfo=UK)
+    with patch.object(lf, 'get_ev_charging_schedule', return_value=[]), \
+         patch.object(lf, 'get_solar_forecast', return_value=[]), \
+         patch.object(lf, 'get_solar_generation_peak_start', return_value=solar_peak), \
+         patch.object(lf, 'get_battery_percent_needed_for_consumption', return_value=20), \
+         patch.object(lf, 'handle_battery_export') as mock_export:
+        lf.run_action_based_on_current_time(t)
+    mock_export.assert_called_once()
+    call_kwargs = mock_export.call_args
+    assert call_kwargs.kwargs['export_end_time'] == solar_peak
+    assert call_kwargs.kwargs['battery_reserve'] == 20
+
+
+def test_run_action_peak_after_solar_peak():
+    t = datetime(2025, 6, 15, 14, 0, tzinfo=UK)
+    off_peak = datetime(2025, 6, 15, 23, 30, tzinfo=UK)
+    with patch.object(lf, 'get_ev_charging_schedule', return_value=[]), \
+         patch.object(lf, 'get_solar_forecast', return_value=[]), \
+         patch.object(lf, 'get_solar_generation_peak_start', return_value=None), \
+         patch.object(lf, 'handle_battery_export') as mock_export:
+        lf.run_action_based_on_current_time(t)
+    mock_export.assert_called_once()
+    assert mock_export.call_args.kwargs['export_end_time'] == off_peak
+
+
+# --- lambda_handler ---
+
+def test_lambda_handler_success():
+    with patch.object(lf, 'run_action_based_on_current_time'):
+        result = lf.lambda_handler(None, None)
+    assert result['statusCode'] == 200
+
+
+def test_lambda_handler_exception():
+    with patch.object(lf, 'run_action_based_on_current_time', side_effect=RuntimeError('test error')), \
+         patch.object(lf, 'send_notification_to_user'):
+        result = lf.lambda_handler(None, None)
+    assert result['statusCode'] == 500
