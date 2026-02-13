@@ -293,13 +293,11 @@ def get_remaining_solar_generation_for_today(script_start_time: datetime, solar_
     logger.info(f'{total_generation:.3f} kWh more to be generated today ({total_generation_as_battery_percentage:.0f}% of total battery capacity) using {forecast_optimism}')
     return total_generation
 
-def get_solar_generation_kw_time(
+def _collect_generation_stats(
     script_start_time: datetime, solar_forecast: list[dict],
     generation_kw: float, want_generation_end_time: bool,
-    want_peak_generation: bool = False,
-    forecast_optimism: str = SOLCAST_OPTIMISM_NORMAL,
-) -> datetime | None:
-    requested_generation_time = None
+    forecast_optimism: str,
+) -> dict:
     earliest_requested_generation_time = None
     latest_requested_generation_time = None
     max_generation_today_time = None
@@ -326,10 +324,30 @@ def get_solar_generation_kw_time(
                         earliest_requested_generation_time = forecast_time
                     if latest_requested_generation_time is None or latest_requested_generation_time < forecast_time:
                         latest_requested_generation_time = forecast_time
+    return {
+        'earliest_requested': earliest_requested_generation_time,
+        'latest_requested': latest_requested_generation_time,
+        'max_kw': max_generation_today_kw,
+        'max_time': max_generation_today_time,
+        'earliest_any_time': earliest_any_generation_time,
+        'earliest_any_kw': earliest_any_generation_kw,
+    }
+
+def get_solar_generation_kw_time(
+    script_start_time: datetime, solar_forecast: list[dict],
+    generation_kw: float, want_generation_end_time: bool,
+    want_peak_generation: bool = False,
+    forecast_optimism: str = SOLCAST_OPTIMISM_NORMAL,
+) -> datetime | None:
+    stats = _collect_generation_stats(script_start_time, solar_forecast, generation_kw, want_generation_end_time, forecast_optimism)
+    earliest_any_generation_time = stats['earliest_any_time']
+    earliest_any_generation_kw = stats['earliest_any_kw']
+    max_generation_today_kw = stats['max_kw']
+    max_generation_today_time = stats['max_time']
     if want_generation_end_time:
-        requested_generation_time = latest_requested_generation_time
+        requested_generation_time = stats['latest_requested']
     else:
-        requested_generation_time = earliest_requested_generation_time
+        requested_generation_time = stats['earliest_requested']
     if earliest_any_generation_time is not None and earliest_any_generation_time == requested_generation_time:
         logger.info(f'We are already generating {earliest_any_generation_kw:.3f} kW using {forecast_optimism} (at {earliest_any_generation_time:%H:%M})')
         requested_generation_time = None
@@ -536,42 +554,43 @@ def get_minutes_needed_to_export_battery_at_full_power(amount_to_export: float) 
     logger.info(f'Need {hours_to_export} hours and {remainder_minutes_to_export} minutes to export {amount_to_export:.0f}% at full power')
     return total_minutes_to_export
 
+def _calculate_solar_adjusted_export_minutes(script_start_time: datetime, export_end_time: datetime, solar_forecast: list[dict], minimum_minutes_to_export: float) -> float:
+    relevant_forecasts = [
+        f for f in solar_forecast
+        if script_start_time < datetime.fromisoformat(f['period_end']) <= export_end_time
+    ]
+    minutes_exported = 0
+    total_minutes_to_export = 0
+    for forecast in reversed(relevant_forecasts):
+        if minutes_exported < minimum_minutes_to_export:
+            period_end = datetime.fromisoformat(forecast['period_end']).astimezone(UK_TIMEZONE)
+            period_start = period_end - timedelta(minutes=SOLCAST_FORECAST_PERIOD_MINUTES)
+            solar_generation_kw = forecast['pv_estimate']
+            if solar_generation_kw > SOLAR_GENERATION_EXPORT_PEAK_KW:
+                excess_solar_kw = solar_generation_kw - SOLAR_GENERATION_EXPORT_PEAK_KW
+                dischargable_battery_kw = GIVENERGY_DISCHARGE_POWER_KW - excess_solar_kw
+                if dischargable_battery_kw < 0:
+                    dischargable_battery_kw = 0
+                discharge_rate_ratio = dischargable_battery_kw / GIVENERGY_DISCHARGE_POWER_KW
+            else:
+                discharge_rate_ratio = 1.0
+            effective_minutes_in_period = SOLCAST_FORECAST_PERIOD_MINUTES * discharge_rate_ratio
+            minutes_exported += effective_minutes_in_period
+            if minutes_exported >= minimum_minutes_to_export:
+                overshoot_export_minutes = minutes_exported - minimum_minutes_to_export
+                needed_real_minutes = overshoot_export_minutes / discharge_rate_ratio
+                total_minutes_to_export += needed_real_minutes
+            else:
+                total_minutes_to_export += SOLCAST_FORECAST_PERIOD_MINUTES
+    total_minutes_to_export += MINS_TO_ALLOW_FOR_SOLAR_EXPORT_CHANGES
+    logger.info(f'Can export the equivalent of {minutes_exported:.0f} mins over {total_minutes_to_export:.0f} mins due to solar generation. We need {minimum_minutes_to_export:.0f} mins.')
+    return max(total_minutes_to_export, minimum_minutes_to_export)
+
 def get_minutes_needed_to_export_battery(script_start_time: datetime, amount_to_export: float, export_end_time: datetime | None = None, solar_forecast: list[dict] | None = None) -> float:
     minimum_minutes_to_export = get_minutes_needed_to_export_battery_at_full_power(amount_to_export)
     if export_end_time is not None and solar_forecast is not None:
         logger.info(f'Calculating how long it will take to export {amount_to_export:.0f}% by {export_end_time:%H:%M} considering generation slows export')
-        # Filter solar forecasts to only include relevant future periods
-        relevant_forecasts = [
-            f for f in solar_forecast
-            if script_start_time < datetime.fromisoformat(f['period_end']) <= export_end_time
-        ]
-        # Iterate backwards in 30-minute intervals from the export_end_time
-        minutes_exported = 0
-        total_minutes_to_export = 0
-        for forecast in reversed(relevant_forecasts):
-            if minutes_exported < minimum_minutes_to_export:
-                period_end = datetime.fromisoformat(forecast['period_end']).astimezone(UK_TIMEZONE)
-                period_start = period_end - timedelta(minutes=SOLCAST_FORECAST_PERIOD_MINUTES)
-                solar_generation_kw = forecast['pv_estimate']
-                if solar_generation_kw > SOLAR_GENERATION_EXPORT_PEAK_KW:
-                    excess_solar_kw = solar_generation_kw - SOLAR_GENERATION_EXPORT_PEAK_KW
-                    dischargable_battery_kw = GIVENERGY_DISCHARGE_POWER_KW - excess_solar_kw
-                    if dischargable_battery_kw < 0:
-                        dischargable_battery_kw = 0
-                    discharge_rate_ratio = dischargable_battery_kw / GIVENERGY_DISCHARGE_POWER_KW
-                else:
-                    discharge_rate_ratio = 1.0
-                effective_minutes_in_period = SOLCAST_FORECAST_PERIOD_MINUTES * discharge_rate_ratio
-                minutes_exported += effective_minutes_in_period
-                if minutes_exported >= minimum_minutes_to_export:
-                    overshoot_export_minutes = minutes_exported - minimum_minutes_to_export
-                    needed_real_minutes = overshoot_export_minutes / discharge_rate_ratio
-                    total_minutes_to_export += needed_real_minutes
-                else:
-                    total_minutes_to_export += SOLCAST_FORECAST_PERIOD_MINUTES
-        total_minutes_to_export += MINS_TO_ALLOW_FOR_SOLAR_EXPORT_CHANGES # Add time to allow for solar forecast changes
-        logger.info(f'Can export the equivalent of {minutes_exported:.0f} mins over {total_minutes_to_export:.0f} mins due to solar generation. We need {minimum_minutes_to_export:.0f} mins.')
-        total_minutes_to_export = max(total_minutes_to_export, minimum_minutes_to_export)
+        total_minutes_to_export = _calculate_solar_adjusted_export_minutes(script_start_time, export_end_time, solar_forecast, minimum_minutes_to_export)
     else:
         total_minutes_to_export = minimum_minutes_to_export
     hours_to_export = round(total_minutes_to_export // 60)
