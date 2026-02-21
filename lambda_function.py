@@ -21,7 +21,7 @@ S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME')
 
 # ── Preferences ──
 
-END_EVENING_EXPORT_HOUR = 23 # End export by 23:30 to avoid noisy iBoost+ near bedtime
+END_EVENING_EXPORT_HOUR = 23
 END_EVENING_EXPORT_MINUTE = 30
 CONSUMPTION_PREDICTION_VARIANCE_PERCENT = 10 # % to increase consumption prediction by, in case we use more today, to ensure we don't discharge too much
 CONSUMPTION_AVERAGE_DAYS = 7 # Number of days to average consumption over (weekday + weekend coverage)
