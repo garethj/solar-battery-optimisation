@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+CLAUDE.md
+.claude/

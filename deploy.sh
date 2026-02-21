@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-FUNCTION_NAME="LAMBDA_FUNCTION_NAME"
-REGION="eu-west-2"
+source .env
+FUNCTION_NAME="${LAMBDA_FUNCTION_NAME:?Set LAMBDA_FUNCTION_NAME in .env}"
+REGION="${AWS_REGION:?Set AWS_REGION in .env}"
 
 echo "==> Installing dependencies into package/"
 rm -rf package
