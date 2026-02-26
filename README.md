@@ -30,11 +30,15 @@ After solar peak, the battery recharges with free solar energy, ready for anothe
 
 ### Consumption protection
 
-Before exporting, the script reserves enough battery for predicted household consumption until off-peak. It estimates this from yesterday's usage (with a 10% buffer) minus the pessimistic solar forecast. This avoids expensive peak grid purchases from over-exporting.
+Before exporting, the script reserves enough battery for predicted household consumption until off-peak. It estimates this from the average of the last 7 days' usage (with a 10% buffer) minus the pessimistic solar forecast. This avoids expensive peak grid purchases from over-exporting.
 
 ### EV override
 
-If the EV is plugged in, exporting pauses. Discharge would flow into the car rather than the grid.
+The battery, inverter, and EV charger share the same AC bus, so any battery discharge flows into the car rather than the grid. The script detects this by querying Octopus Energy's Intelligent Octopus smart charging schedule (`plannedDispatches`). There's no direct "is plugged in" API — instead, the existence of planned charging slots acts as a proxy, since Octopus only creates them when the car is connected.
+
+When the EV is plugged in, the script distinguishes two states:
+- **Currently charging** (within a dispatch slot): stops battery discharge entirely
+- **Not currently charging** (between slots): switches to eco mode, which also prevents export, and waits for the next charging slot to re-evaluate
 
 ## Architecture
 
